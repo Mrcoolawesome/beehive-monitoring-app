@@ -1,36 +1,117 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Beehive Weight Monitor
 
-## Getting Started
+Local web dashboard for beehive weight telemetry gathered by a Wii Balance
+Board wired into a Raspberry Pi running NASA's [F´](https://fprime.jpl.nasa.gov/)
+framework. F´ downlinks weight sessions as JSON files; this app watches a
+directory for those files, averages each session's samples, stores the result
+in Postgres, and charts it over time.
 
-First, run the development server:
+Stack: Next.js (App Router) + TypeScript + Tailwind + Prisma + PostgreSQL.
+No auth/accounts — this is a single-user local app.
+
+## How data flows
+
+1. F´'s `WiiBoardManager` component archives a ~60-sample, 1-minute capture
+   and sends it to the GDS as a data product JSON file (see
+   `Components/WiiBoardManager/WiiBoardManager.fpp` in the sibling
+   `../beehive-project` repo).
+2. `scripts/watcher.ts` watches `WATCH_DIR` for new `*.json` files.
+3. Each file is parsed (`lib/ingest.ts`), samples at or below
+   `MIN_VALID_WEIGHT_KG` (0.1 kg) are dropped as tare/warm-up noise, and the
+   remaining samples are averaged.
+4. The average, timestamp, and `PI_MAC_ADDRESS` are written to the
+   `WeightReading` table.
+5. The file is moved to `WATCH_DIR/processed/` on success or
+   `WATCH_DIR/failed/` if parsing/validation fails (e.g. every sample was
+   noise — this happened for several bench-test captures in the real F´
+   sample data, where the board was empty).
+6. The dashboard (`/`) reads readings for `PI_MAC_ADDRESS` from Postgres and
+   polls `/api/readings` every 30s to stay current.
+
+## Prerequisites
+
+- Node 20+
+- pnpm (`corepack enable` if you don't have it)
+- A local PostgreSQL server
+
+## Setup
+
+1. Install dependencies:
+
+   ```bash
+   pnpm install
+   ```
+
+2. Create a local Postgres role and database (adjust the password):
+
+   ```bash
+   sudo -u postgres psql \
+     -c "CREATE ROLE beehive_app WITH LOGIN PASSWORD 'CHANGE_ME';" \
+     -c "CREATE DATABASE beehive OWNER beehive_app;"
+   ```
+
+3. Copy `.env.example` to `.env` and fill in:
+   - `DATABASE_URL` — matching the role/password from step 2
+   - `WATCH_DIR` — the directory F´ (or a script relaying its downlinks) drops
+     session JSON files into. Defaults to `./data/incoming`, created
+     automatically on first run.
+   - `PI_MAC_ADDRESS` — identifies this hive's Pi. Only one Pi exists today,
+     so this is a single hardcoded value rather than a per-file field (the F´
+     payload doesn't carry a MAC address). Revisit this once there are
+     multiple hives.
+
+4. Apply the database schema:
+
+   ```bash
+   pnpm db:migrate
+   ```
+
+## Running
+
+Two processes run side by side — the web server and the file watcher:
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+pnpm dev      # Next.js dev server, http://localhost:3000
+pnpm watch    # ingestion watcher (processes existing + new files in WATCH_DIR)
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+For production on the local server, run `pnpm build && pnpm start` for the
+web app, and keep `pnpm watch` running persistently (systemd unit or `pm2`),
+since it's a long-lived process rather than something Next.js's request/response
+model can host. Example systemd unit:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```ini
+[Unit]
+Description=Beehive telemetry watcher
+After=postgresql.service
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+[Service]
+WorkingDirectory=/path/to/beehive-monitoring-app
+ExecStart=/usr/bin/pnpm watch
+Restart=on-failure
+User=devins
 
-## Learn More
+[Install]
+WantedBy=multi-user.target
+```
 
-To learn more about Next.js, take a look at the following resources:
+## Other useful commands
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+- `pnpm db:studio` — browse the database in Prisma Studio
+- `pnpm lint` / `pnpm exec tsc --noEmit` — lint / typecheck
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Project layout
 
-## Deploy on Vercel
+- `lib/ingest.ts` — parses and validates F´ JSON, computes the filtered average
+- `lib/db.ts` — Prisma client (Prisma 7 requires an explicit driver adapter;
+  see `@prisma/adapter-pg` usage there)
+- `scripts/watcher.ts` — the standalone ingestion process (`pnpm watch`)
+- `app/api/readings/route.ts` — GET endpoint, readings for a `?mac=` (defaults
+  to `PI_MAC_ADDRESS`)
+- `app/components/Dashboard.tsx` / `WeightChart.tsx` — the dashboard UI
+- `prisma/schema.prisma` — the `WeightReading` model
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Future
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+The F´ project itself lives in `../beehive-project`; the plan is to bring it
+in as a git submodule of this repo once the monitoring app has stabilized.

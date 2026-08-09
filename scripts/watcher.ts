@@ -65,7 +65,7 @@ async function main() {
   console.log(`Watching ${WATCH_DIR} for F' telemetry JSON files...`);
   console.log(`Tagging readings with piMacAddress=${PI_MAC_ADDRESS}`);
 
-  const watcher = chokidar.watch("*.json", {
+  const watcher = chokidar.watch(".", {
     cwd: WATCH_DIR,
     depth: 0,
     ignoreInitial: false,
@@ -76,6 +76,7 @@ async function main() {
   });
 
   watcher.on("add", (relativePath) => {
+    if (!relativePath.toLowerCase().endsWith(".json")) return;
     void handleFile(path.join(WATCH_DIR!, relativePath));
   });
 
