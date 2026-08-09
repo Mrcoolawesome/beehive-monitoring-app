@@ -80,9 +80,13 @@ export default function Dashboard({
   const latest = readings[readings.length - 1];
 
   return (
-    <div className="mx-auto flex w-full max-w-4xl flex-1 flex-col gap-6 px-6 py-10">
+    // Padding shrinks on narrow screens (the `sm:` variants only kick in at
+    // 640px+) so phones get more usable width instead of the same desktop
+    // margins squeezing the content. `max-w-4xl` still caps the width on
+    // large screens so the chart/table don't stretch uncomfortably wide.
+    <div className="mx-auto flex w-full max-w-4xl flex-1 flex-col gap-4 px-4 py-6 sm:gap-6 sm:px-6 sm:py-10">
       <header className="flex flex-col gap-1">
-        <h1 className="text-2xl font-semibold text-[var(--foreground)]">
+        <h1 className="text-xl font-semibold text-[var(--foreground)] sm:text-2xl">
           Hive Weight Monitor
         </h1>
         <p className="text-sm text-[var(--text-muted)]">
@@ -91,15 +95,18 @@ export default function Dashboard({
       </header>
 
       {/* Stat tile: the single most important number on the page. */}
-      <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-6">
+      <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-6">
         <div className="text-sm text-[var(--text-secondary)]">
           Latest weight
         </div>
         {latest ? (
           <>
-            <div className="mt-1 text-5xl font-semibold tabular-nums text-[var(--foreground)]">
+            {/* text-4xl rather than 5xl below ~640px keeps "61.70 kg" from
+                crowding the card's padding on the narrowest phone screens
+                (~320px wide). */}
+            <div className="mt-1 text-4xl font-semibold tabular-nums text-[var(--foreground)] sm:text-5xl">
               {latest.averageWeight.toFixed(2)}
-              <span className="ml-2 text-2xl text-[var(--text-muted)]">
+              <span className="ml-2 text-xl text-[var(--text-muted)] sm:text-2xl">
                 kg
               </span>
             </div>
@@ -120,28 +127,34 @@ export default function Dashboard({
       {/* Chart card: the time-series view, with a raw-data table as an
           alternate view of the exact same readings (every value the chart
           shows is also reachable here, without needing to hover). */}
-      <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-6">
+      <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-6">
         <div className="mb-2 flex items-center justify-between">
           <h2 className="text-sm font-medium text-[var(--text-secondary)]">
             Weight over time
           </h2>
+          {/* Padded to a comfortable touch target (not just underlined
+              text) since this is the one interactive control on a page
+              that's otherwise just for reading — worth making it easy to
+              tap accurately on a phone. */}
           <button
             onClick={() => setShowTable((v) => !v)}
-            className="text-sm text-[var(--series-1)] hover:underline"
+            className="-mx-2 -my-1 rounded-md px-2 py-1 text-sm text-[var(--series-1)] hover:underline active:bg-[var(--series-1-wash)]"
           >
             {showTable ? "Show chart" : "Show table"}
           </button>
         </div>
 
         {readings.length === 0 ? (
-          <div className="flex h-[360px] items-center justify-center text-[var(--text-muted)]">
+          <div className="flex h-[280px] items-center justify-center text-[var(--text-muted)] sm:h-[360px]">
             No data yet
           </div>
         ) : showTable ? (
           // Newest-first in the table (opposite of the chart's oldest-first
           // order) since that's the more natural reading order for a log —
-          // most recent reading at the top.
-          <div className="max-h-[360px] overflow-y-auto">
+          // most recent reading at the top. overflow-x-auto is a safety net
+          // in case a very narrow viewport can't fit both columns — the
+          // table scrolls in its own box rather than the whole page.
+          <div className="max-h-[280px] overflow-x-auto overflow-y-auto sm:max-h-[360px]">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-[var(--gridline)] text-left text-[var(--text-muted)]">

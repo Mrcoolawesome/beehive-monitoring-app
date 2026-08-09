@@ -98,6 +98,27 @@ User=devins
 WantedBy=multi-user.target
 ```
 
+## Mobile & installing as an app
+
+The dashboard is responsive (usable one-handed on a phone) and is a PWA — on
+a phone or desktop, the browser can install it as a standalone app icon
+(manifest: `app/manifest.ts`, icons: `public/icons/`, service worker:
+`public/sw.js`, registered by `app/components/ServiceWorkerRegistration.tsx`).
+
+**The service worker only caches the static app shell (icons, manifest) —
+never the dashboard page or `/api/readings`.** This app's entire purpose is
+showing the *current* hive weight, so serving a cached/stale reading would
+defeat the point. Offline, the installed app shell still opens; it just
+won't have live data until back online.
+
+**Important if you access this from a phone over your LAN** (rather than on
+the same machine as `localhost`): browsers only allow service workers (and
+therefore PWA installability) over a secure context. `localhost` gets a free
+pass, but `http://<server-lan-ip>:3000` from another device does not — the
+dashboard itself will work fine either way, it just won't be installable
+without HTTPS. A local reverse proxy (Caddy, Tailscale Serve, etc.) handling
+TLS in front of `pnpm start` is the usual fix.
+
 ## Other useful commands
 
 - `pnpm db:studio` — browse the database in Prisma Studio
@@ -112,6 +133,10 @@ WantedBy=multi-user.target
 - `app/api/readings/route.ts` — GET endpoint, readings for a `?mac=` (defaults
   to `PI_MAC_ADDRESS`)
 - `app/components/Dashboard.tsx` / `WeightChart.tsx` — the dashboard UI
+  (responsive; see the `sm:` breakpoints throughout for the mobile-vs-desktop
+  differences)
+- `app/manifest.ts` / `public/sw.js` / `app/components/ServiceWorkerRegistration.tsx`
+  — the PWA install manifest, service worker, and its client-side registration
 - `prisma/schema.prisma` — the `WeightReading` model
 
 ## Future

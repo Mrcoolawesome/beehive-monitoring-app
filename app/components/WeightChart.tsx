@@ -126,58 +126,68 @@ export default function WeightChart({ readings }: { readings: Reading[] }) {
     data.length > 1 ? data[data.length - 1].timestamp - data[0].timestamp : 0;
 
   return (
-    <ResponsiveContainer width="100%" height={360}>
-      <LineChart data={data} margin={{ top: 16, right: 24, left: 8, bottom: 8 }}>
-        {/* Horizontal gridlines only — vertical ones would compete with the
-            crosshair cursor below and add clutter without adding meaning. */}
-        <CartesianGrid
-          vertical={false}
-          stroke="var(--gridline)"
-          strokeDasharray="0"
-        />
-        <XAxis
-          dataKey="timestamp"
-          type="number"
-          domain={["dataMin", "dataMax"]}
-          tickFormatter={(ts) => formatAxisTick(ts, spanMs)}
-          stroke="var(--baseline)"
-          tick={{ fill: "var(--text-muted)", fontSize: 12 }}
-          tickLine={false}
-          axisLine={{ stroke: "var(--baseline)" }}
-          minTickGap={40} // avoids overlapping labels when there are many close-together readings
-        />
-        <YAxis
-          dataKey="averageWeight"
-          domain={["auto", "auto"]}
-          tickFormatter={(v) => `${v} kg`}
-          stroke="var(--baseline)"
-          tick={{ fill: "var(--text-muted)", fontSize: 12 }}
-          tickLine={false}
-          axisLine={false}
-          width={64}
-        />
-        <Tooltip
-          content={<TooltipContent />}
-          // The vertical line that tracks the pointer and snaps to the
-          // nearest reading, so the reader aims at a moment in time rather
-          // than trying to land exactly on the (thin) line itself.
-          cursor={{ stroke: "var(--baseline)", strokeWidth: 1 }}
-        />
-        <Line
-          type="monotone"
-          dataKey="averageWeight"
-          stroke="var(--series-1)"
-          strokeWidth={2}
-          dot={false} // no dot on every point — that would be visual noise; the tooltip carries per-point detail instead
-          activeDot={{
-            r: 4,
-            fill: "var(--series-1)",
-            stroke: "var(--surface)", // a ring in the surface color keeps the dot legible where it crosses the line
-            strokeWidth: 2,
-          }}
-          isAnimationActive={false} // instant redraw on the 30s poll, rather than re-animating the whole line in from zero each time
-        />
-      </LineChart>
-    </ResponsiveContainer>
+    // The height has to live on this wrapping div (via Tailwind's
+    // responsive `h-*` classes) rather than as a fixed number passed
+    // straight to ResponsiveContainer, since that prop only accepts one
+    // static value — it has no way to know it should be shorter on a phone
+    // screen than on desktop.
+    <div className="h-[280px] sm:h-[360px]">
+      <ResponsiveContainer width="100%" height="100%">
+        <LineChart data={data} margin={{ top: 16, right: 8, left: 0, bottom: 8 }}>
+          {/* Horizontal gridlines only — vertical ones would compete with the
+              crosshair cursor below and add clutter without adding meaning. */}
+          <CartesianGrid
+            vertical={false}
+            stroke="var(--gridline)"
+            strokeDasharray="0"
+          />
+          <XAxis
+            dataKey="timestamp"
+            type="number"
+            domain={["dataMin", "dataMax"]}
+            tickFormatter={(ts) => formatAxisTick(ts, spanMs)}
+            stroke="var(--baseline)"
+            tick={{ fill: "var(--text-muted)", fontSize: 12 }}
+            tickLine={false}
+            axisLine={{ stroke: "var(--baseline)" }}
+            minTickGap={40} // avoids overlapping labels when there are many close-together readings
+          />
+          <YAxis
+            dataKey="averageWeight"
+            domain={["auto", "auto"]}
+            tickFormatter={(v) => `${v} kg`}
+            stroke="var(--baseline)"
+            tick={{ fill: "var(--text-muted)", fontSize: 12 }}
+            tickLine={false}
+            axisLine={false}
+            // Trimmed from a more generous 64px — on a ~320px-wide phone in
+            // portrait, every pixel the axis takes is a pixel the actual
+            // line doesn't get. 52px still comfortably fits "62 kg".
+            width={52}
+          />
+          <Tooltip
+            content={<TooltipContent />}
+            // The vertical line that tracks the pointer and snaps to the
+            // nearest reading, so the reader aims at a moment in time rather
+            // than trying to land exactly on the (thin) line itself.
+            cursor={{ stroke: "var(--baseline)", strokeWidth: 1 }}
+          />
+          <Line
+            type="monotone"
+            dataKey="averageWeight"
+            stroke="var(--series-1)"
+            strokeWidth={2}
+            dot={false} // no dot on every point — that would be visual noise; the tooltip carries per-point detail instead
+            activeDot={{
+              r: 4,
+              fill: "var(--series-1)",
+              stroke: "var(--surface)", // a ring in the surface color keeps the dot legible where it crosses the line
+              strokeWidth: 2,
+            }}
+            isAnimationActive={false} // instant redraw on the 30s poll, rather than re-animating the whole line in from zero each time
+          />
+        </LineChart>
+      </ResponsiveContainer>
+    </div>
   );
 }
