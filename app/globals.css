@@ -1,5 +1,15 @@
 @import "tailwindcss";
 
+/*
+ * Design tokens for the whole app, light mode. These aren't arbitrary
+ * colors — --series-1 is the validated single-hue "sequential blue" used
+ * for the weight chart's line, and the ink/surface tokens (--foreground,
+ * --text-secondary, --text-muted, --gridline, --baseline) follow a
+ * light-mode "chart chrome" palette designed so text/gridlines/axes never
+ * compete with the data itself for attention. Referenced directly by
+ * WeightChart.tsx (as CSS variables, since Recharts renders SVG) and via
+ * Tailwind's arbitrary-value syntax elsewhere, e.g. text-[var(--foreground)].
+ */
 :root {
   --background: #f9f9f7;
   --foreground: #0b0b0b;
@@ -29,6 +39,9 @@
   --font-mono: var(--font-geist-mono);
 }
 
+/* Same tokens, restepped for a dark surface — not just the light values
+ * dimmed, since a color that reads well on a near-white background often
+ * looks washed out or too harsh on near-black. */
 @media (prefers-color-scheme: dark) {
   :root {
     --background: #0d0d0d;

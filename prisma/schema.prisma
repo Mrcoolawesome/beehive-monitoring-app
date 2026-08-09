@@ -1,23 +1,43 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Get a free hosted Postgres database in seconds: `npx create-db`
-
+// Prisma generates a typed database client from this file. Run
+// `pnpm exec prisma migrate dev` after changing a model to create and apply
+// a migration, and `pnpm exec prisma generate` to regenerate the client
+// (the "prisma-client" generator below writes it into app/generated/prisma).
 generator client {
   provider = "prisma-client"
   output   = "../app/generated/prisma"
 }
 
+// Note: Prisma 7 no longer allows a `url = env("DATABASE_URL")` line here.
+// The connection is supplied at runtime by a driver adapter instead — see
+// lib/db.ts (@prisma/adapter-pg) for the app, and prisma.config.ts for the
+// Prisma CLI (migrate, studio).
 datasource db {
   provider = "postgresql"
 }
 
+// One row per ingested F' weight session (see lib/ingest.ts for how a raw
+// JSON telemetry file becomes one of these rows).
 model WeightReading {
-  id            String   @id @default(cuid())
-  timestamp     DateTime
-  averageWeight Float
-  piMacAddress  String
-  createdAt     DateTime @default(now())
+  id String @id @default(cuid())
 
+  // When the session was captured on the Pi (from the F' JSON header), not
+  // when we happened to ingest the file.
+  timestamp DateTime
+
+  // The averaged weight for the session, in kilograms, after filtering out
+  // zero/near-zero sensor-noise samples (see MIN_VALID_WEIGHT_KG).
+  averageWeight Float
+
+  // Identifies which Raspberry Pi / hive this reading came from. Only one
+  // Pi exists today so every row currently shares one hardcoded value (see
+  // PI_MAC_ADDRESS in .env), but this field is here so multiple hives can
+  // be supported later without a schema change.
+  piMacAddress String
+
+  // When this row was written to the database (distinct from `timestamp`,
+  // which is when the sensor reading actually happened).
+  createdAt DateTime @default(now())
+
+  // Speeds up the dashboard's "readings for this Pi, ordered by time" query.
   @@index([piMacAddress, timestamp])
 }

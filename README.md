@@ -9,6 +9,9 @@ in Postgres, and charts it over time.
 Stack: Next.js (App Router) + TypeScript + Tailwind + Prisma + PostgreSQL.
 No auth/accounts — this is a single-user local app.
 
+See [`docs/planning.md`](docs/planning.md) for the original project planning
+doc and the decisions made while implementing it.
+
 ## How data flows
 
 1. F´'s `WiiBoardManager` component archives a ~60-sample, 1-minute capture
