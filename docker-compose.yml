@@ -1,0 +1,102 @@
+# Brings up the whole stack: Postgres, a one-shot migration job, the web
+# dashboard, and the ingestion watcher. `docker compose up -d --build` is
+# the whole setup, once .env has real values (see .env.example) — no
+# separately-managed host Postgres or manually-run `pnpm` commands needed.
+#
+# All three app services (migrate/web/watcher) build from and run the same
+# image (see Dockerfile's top comment for why), just with different
+# `command:` overrides.
+
+services:
+  db:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-beehive_app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-beehive}
+    volumes:
+      # Named volume, not a bind mount — Postgres's data directory doesn't
+      # need to be human-browsable on the host, and this avoids UID
+      # mismatches between the postgres image's internal user and the host.
+      # Mounted at /var/lib/postgresql (not .../data) because the postgres
+      # 18+ image organizes data into version-specific subdirectories under
+      # there now, for pg_upgrade compatibility — mounting straight at
+      # .../data (the pre-18 convention) makes the image refuse to start.
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      # Everything else waits on this — `migrate` (below) would otherwise
+      # try to connect before Postgres has finished its own startup and
+      # fail on the very first `docker compose up`.
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER:-beehive_app} -d ${POSTGRES_DB:-beehive}",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Runs once per `docker compose up`, applies any pending Prisma
+  # migrations, then exits. Both `web` and `watcher` wait for this to
+  # finish successfully before they start, so neither one can query a
+  # database that's missing the WeightReading table on a fresh volume.
+  migrate:
+    image: beehive-monitoring-app:latest
+    build: .
+    command: ["node_modules/.bin/prisma", "migrate", "deploy"]
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-beehive_app}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-beehive}
+    depends_on:
+      db:
+        condition: service_healthy
+
+  web:
+    image: beehive-monitoring-app:latest
+    build: .
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-beehive_app}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-beehive}
+      PI_MAC_ADDRESS: ${PI_MAC_ADDRESS:?Set PI_MAC_ADDRESS in .env}
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  watcher:
+    image: beehive-monitoring-app:latest
+    build: .
+    restart: unless-stopped
+    command: ["node_modules/.bin/tsx", "scripts/watcher.ts"]
+    # This service's whole job is renaming/moving files inside whatever
+    # host directory WATCH_DIR below points at (e.g. F's own DpCat output
+    # directory) — so it needs to run as whatever host user actually owns
+    # that directory, not the image's baked-in `nextjs` user (uid 1001),
+    # or every move fails with EACCES / leaves root-owned files the host
+    # user can't clean up without sudo. WATCH_UID/WATCH_GID default to
+    # 1000/1000 (the first regular Linux user on most distros); if `id -u`
+    # on your host gives something else, set WATCH_UID/WATCH_GID in .env
+    # to match.
+    user: "${WATCH_UID:-1000}:${WATCH_GID:-1000}"
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-beehive_app}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-beehive}
+      PI_MAC_ADDRESS: ${PI_MAC_ADDRESS:?Set PI_MAC_ADDRESS in .env}
+      # The container-side path — see the volumes: line below for where
+      # this actually points on the host. Deliberately not the same value
+      # as WATCH_DIR in .env (that's a host path used for the bind mount
+      # source; a path like /data/incoming is what needs to exist *inside*
+      # this container).
+      WATCH_DIR: /data/incoming
+    volumes:
+      - ${WATCH_DIR:?Set WATCH_DIR in .env to the host directory F' drops JSON files into}:/data/incoming
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  postgres-data:

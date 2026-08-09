@@ -1,0 +1,11 @@
+# Kept out of the build context so the image never bakes in local secrets,
+# and so rebuilds aren't slowed down copying gigabytes of node_modules/build
+# output that get reinstalled/rebuilt inside the container anyway.
+node_modules
+.next
+app/generated
+data
+.git
+.env
+.env.local
+*.log

@@ -31,13 +31,55 @@ doc and the decisions made while implementing it.
 6. The dashboard (`/`) reads readings for `PI_MAC_ADDRESS` from Postgres and
    polls `/api/readings` every 30s to stay current.
 
-## Prerequisites
+## Running with Docker (recommended for a server)
+
+The whole stack — Postgres, the web dashboard, and the watcher — runs via
+Docker Compose, with no separately-installed Postgres or Node needed on the
+host. `docker-compose.yml` defines four services that all build from the one
+`Dockerfile` (see its top comment for why one image covers all three app
+roles): `db`, a one-shot `migrate` job that applies Prisma migrations before
+anything else starts, `web`, and `watcher`.
+
+1. Copy `.env.example` to `.env` and fill in:
+   - `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` — credentials for
+     the stack's own Postgres container (a separate database from any
+     Postgres already installed on the host — no conflict either way).
+   - `WATCH_DIR` — the **host** directory F´ drops session JSON files into.
+     Bind-mounted into the watcher container; see `docker-compose.yml` for
+     exactly how.
+   - `PI_MAC_ADDRESS` — same meaning as in local dev (see below).
+   - `WATCH_UID` / `WATCH_GID` — optional, only needed if your host user's
+     `id -u`/`id -g` isn't 1000/1000 (the common default). The watcher
+     container writes into `WATCH_DIR` as this user so the files it moves
+     around stay owned by you, not root.
+
+2. Build and start everything:
+
+   ```bash
+   docker compose up -d --build
+   ```
+
+   `migrate` runs once per `up` and is a no-op after the first run (Prisma
+   only applies migrations that haven't already been applied). `web` and
+   `watcher` both wait for it to finish successfully before starting, so
+   there's no race against a database that doesn't have the `WeightReading`
+   table yet on a fresh volume.
+
+3. Open `http://<server>:3000`. Watch logs with `docker compose logs -f
+   watcher` (or `web`, or `db`).
+
+To update after pulling new code: `docker compose up -d --build` again — it
+rebuilds the image and recreates whatever changed.
+
+## Running without Docker (local development)
+
+### Prerequisites
 
 - Node 20+
 - pnpm (`corepack enable` if you don't have it)
 - A local PostgreSQL server
 
-## Setup
+### Setup
 
 1. Install dependencies:
 
@@ -69,7 +111,7 @@ doc and the decisions made while implementing it.
    pnpm db:migrate
    ```
 
-## Running
+### Running
 
 Two processes run side by side — the web server and the file watcher:
 
