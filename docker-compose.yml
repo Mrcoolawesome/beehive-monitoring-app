@@ -70,7 +70,10 @@ services:
     build: .
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      # Host-side port is configurable (WEB_PORT in .env, defaults to 3000)
+      # since a server running other services may already have 3000 taken —
+      # the container always listens on 3000 internally either way.
+      - "${WEB_PORT:-3000}:3000"
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-beehive_app}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-beehive}
       PI_MAC_ADDRESS: ${PI_MAC_ADDRESS:?Set PI_MAC_ADDRESS in .env}
