@@ -14,46 +14,87 @@ doc and the decisions made while implementing it.
 
 ## How data flows
 
-1. F´'s `WiiBoardManager` component archives a ~60-sample, 1-minute capture
-   and sends it to the GDS as a data product JSON file (see
-   `Components/WiiBoardManager/WiiBoardManager.fpp` in the sibling
-   `../beehive-project` repo).
-2. `scripts/watcher.ts` watches `WATCH_DIR` for new `*.json` files.
-3. Each file is parsed (`lib/ingest.ts`), samples at or below
+The full pipeline spans two repos — this one, and the sibling
+`../beehive-project` (the F´ flight software + ground station):
+
+1. F´'s `WiiBoardManager` component (in `../beehive-project`) archives a
+   ~60-sample, 1-minute capture on the Pi and downlinks it to the ground
+   station (GDS) as a raw `.fdp` data product file, landing in
+   `../beehive-project/DpCat/`.
+2. `../beehive-project/tools/watch_dpcat_decode.py` decodes each `.fdp` into
+   a sibling `.json` file in that same directory — this repo's watcher never
+   sees `.fdp` files directly, only the decoded JSON.
+3. `scripts/watcher.ts` (this repo) watches `WATCH_DIR` for those new
+   `*.json` files.
+4. Each file is parsed (`lib/ingest.ts`), samples at or below
    `MIN_VALID_WEIGHT_KG` (0.1 kg) are dropped as tare/warm-up noise, and the
    remaining samples are averaged.
-4. The average, timestamp, and `PI_MAC_ADDRESS` are written to the
+5. The average, timestamp, and `PI_MAC_ADDRESS` are written to the
    `WeightReading` table.
-5. The file is moved to `WATCH_DIR/processed/` on success or
+6. The file is moved to `WATCH_DIR/processed/` on success or
    `WATCH_DIR/failed/` if parsing/validation fails (e.g. every sample was
    noise — this happened for several bench-test captures in the real F´
    sample data, where the board was empty).
-6. The dashboard (`/`) reads readings for `PI_MAC_ADDRESS` from Postgres and
+7. The dashboard (`/`) reads readings for `PI_MAC_ADDRESS` from Postgres and
    polls `/api/readings` every 30s to stay current.
 
 ## Running with Docker (recommended for a server)
 
-The whole stack — Postgres, the web dashboard, and the watcher — runs via
-Docker Compose, with no separately-installed Postgres or Node needed on the
-host. `docker-compose.yml` defines four services that all build from the one
-`Dockerfile` (see its top comment for why one image covers all three app
-roles): `db`, a one-shot `migrate` job that applies Prisma migrations before
-anything else starts, `web`, and `watcher`.
+`docker compose up -d --build` brings up the **entire pipeline described
+above** — not just this repo's half of it. `docker-compose.yml` includes
+`../beehive-project/docker-compose.yml` (Compose's `include:`, not a git
+submodule — the two repos stay independently versioned), which contributes
+two services: `gds` (the F´ ground station, receives the Pi's downlink) and
+`decoder` (turns its raw `.fdp` output into the `.json` this repo's watcher
+reads). Alongside those, this repo's own `Dockerfile` builds one image
+reused by three services — `db` doesn't count, that's stock Postgres:
+
+- `db` — Postgres 18, with its own persistent volume
+- `migrate` — one-shot job, applies Prisma migrations before `web`/`watcher`
+  start
+- `web` — the dashboard
+- `watcher` — the ingestion process described above
+- `gds` / `decoder` — from `../beehive-project`, see that repo's README for
+  what they do in more depth
+
+**Requires `../beehive-project` to exist as a sibling directory** (i.e. this
+repo and that one checked out next to each other, same as for local dev) —
+`include:` resolves that path relative to this repo's `docker-compose.yml`.
+
+**If you previously set up `beehive-project`'s systemd decoder service**
+(`beehive-dpcat-decode.service`), stop and disable it before running the
+Docker stack — it does the exact same job as the `decoder` service above
+against the same directory, and running both is redundant (see the note in
+`../beehive-project/README.md` section 6):
+
+```bash
+systemctl --user disable --now beehive-dpcat-decode.service
+```
 
 1. Copy `.env.example` to `.env` and fill in:
    - `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` — credentials for
      the stack's own Postgres container (a separate database from any
      Postgres already installed on the host — no conflict either way).
-   - `WATCH_DIR` — the **host** directory F´ drops session JSON files into.
-     Bind-mounted into the watcher container; see `docker-compose.yml` for
-     exactly how.
+   - `WATCH_DIR` — the **host** directory F´ writes JSON files into. In the
+     combined stack this should point at `../beehive-project/DpCat` — the
+     same directory `gds`/`decoder` write to — so this repo's watcher
+     actually sees what F´ produces. Bind-mounted into the watcher
+     container; see `docker-compose.yml` for exactly how.
    - `PI_MAC_ADDRESS` — same meaning as in local dev (see below).
    - `WATCH_UID` / `WATCH_GID` — optional, only needed if your host user's
      `id -u`/`id -g` isn't 1000/1000 (the common default). The watcher
      container writes into `WATCH_DIR` as this user so the files it moves
      around stay owned by you, not root.
 
-2. Build and start everything:
+2. On the host (not in a container — this needs the actual F´ build
+   toolchain), build the ARM deployment GDS reads its dictionary from, if
+   you haven't already:
+
+   ```bash
+   cd ../beehive-project && fprime-util build arm-hf-linux
+   ```
+
+3. Build and start everything:
 
    ```bash
    docker compose up -d --build
@@ -65,8 +106,9 @@ anything else starts, `web`, and `watcher`.
    there's no race against a database that doesn't have the `WeightReading`
    table yet on a fresh volume.
 
-3. Open `http://<server>:3000`. Watch logs with `docker compose logs -f
-   watcher` (or `web`, or `db`).
+4. Open `http://<server>:3000` for the dashboard, `http://<server>:5000` for
+   the GDS web GUI. Watch logs with `docker compose logs -f watcher` (or
+   `web`, `db`, `gds`, `decoder`).
 
 To update after pulling new code: `docker compose up -d --build` again — it
 rebuilds the image and recreates whatever changed.

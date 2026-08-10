@@ -1,11 +1,25 @@
-# Brings up the whole stack: Postgres, a one-shot migration job, the web
-# dashboard, and the ingestion watcher. `docker compose up -d --build` is
-# the whole setup, once .env has real values (see .env.example) — no
-# separately-managed host Postgres or manually-run `pnpm` commands needed.
+# Brings up the WHOLE pipeline, from the F' ground station through to the
+# dashboard: Postgres, a one-shot migration job, the web dashboard, the
+# ingestion watcher — plus, via `include:` below, the sibling beehive-project
+# repo's own `gds` (fprime-gds, receives the Pi's downlink and writes raw
+# .fdp data-product files) and `decoder` (.fdp -> .json) services.
+# `docker compose up -d --build` is the whole setup, once .env has real
+# values (see .env.example) — no separately-managed host Postgres, no
+# manually-run `pnpm` commands, and no separately-run F' tooling.
 #
-# All three app services (migrate/web/watcher) build from and run the same
-# image (see Dockerfile's top comment for why), just with different
-# `command:` overrides.
+# All three of this repo's app services (migrate/web/watcher) build from and
+# run the same image (see Dockerfile's top comment for why), just with
+# different `command:` overrides.
+#
+# beehive-project is included, not merged into this file or made a git
+# submodule — it stays an independently-versioned sibling repo (../beehive-project),
+# and `include:` (Compose 2.20+) pulls its service definitions in as-is, so
+# there's only one place (its own docker-compose.yml) that ever defines what
+# `gds`/`decoder` actually do. Its relative volume paths (./DpCat, etc.)
+# resolve against ITS directory, not this one — Compose handles that
+# automatically for included files.
+include:
+  - path: ../beehive-project/docker-compose.yml
 
 services:
   db:
