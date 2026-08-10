@@ -53,11 +53,28 @@ async function handleFile(filePath: string) {
   const fileName = path.basename(filePath);
   try {
     const session = await parseTelemetryFile(filePath);
-    await prisma.weightReading.create({
-      data: {
+    // upsert rather than create: the same source file can legitimately get
+    // handed to this watcher more than once — e.g. a decoder upstream
+    // (like beehive-project's tools/watch_dpcat_decode.py) redecoding a
+    // .fdp it's already decoded, after something else moved its .json
+    // output away. Same Pi + same timestamp is always the same reading
+    // (F's header timestamp is microsecond-precision, one per session), so
+    // re-ingesting it just overwrites the same row instead of creating a
+    // duplicate one.
+    await prisma.weightReading.upsert({
+      where: {
+        piMacAddress_timestamp: {
+          piMacAddress: PI_MAC_ADDRESS!,
+          timestamp: session.timestamp,
+        },
+      },
+      create: {
         timestamp: session.timestamp,
         averageWeight: session.averageWeightKg,
         piMacAddress: PI_MAC_ADDRESS!,
+      },
+      update: {
+        averageWeight: session.averageWeightKg,
       },
     });
     await rename(filePath, path.join(PROCESSED_DIR, fileName));

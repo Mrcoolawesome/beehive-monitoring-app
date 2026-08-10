@@ -38,6 +38,13 @@ model WeightReading {
   // which is when the sensor reading actually happened).
   createdAt DateTime @default(now())
 
-  // Speeds up the dashboard's "readings for this Pi, ordered by time" query.
-  @@index([piMacAddress, timestamp])
+  // Two genuine readings from the same Pi can never share a timestamp (F's
+  // header timestamp is microsecond-precision and each session is ~a minute
+  // apart), so this doubles as a de-dup guard: if the same source file ever
+  // gets decoded and ingested more than once — e.g. a decoder or watcher
+  // restart re-processing something it already handled — upsert-ing on this
+  // key makes that a no-op update instead of a duplicate row. See
+  // scripts/watcher.ts's use of `upsert` and docs/planning.md's Decisions
+  // section for the deployment issue that surfaced the need for this.
+  @@unique([piMacAddress, timestamp])
 }
