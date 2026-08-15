@@ -111,7 +111,19 @@ function TooltipContent({
   );
 }
 
-export default function WeightChart({ readings }: { readings: Reading[] }) {
+// Recharts accepts "auto" per-bound (not just for the whole domain), so a
+// user can pin just a min or just a max and leave the other bound to fit
+// the data — matching how the min/max kg inputs in Dashboard.tsx work
+// (either one can be left blank).
+export type WeightDomain = [number | "auto", number | "auto"];
+
+export default function WeightChart({
+  readings,
+  weightDomain = ["auto", "auto"],
+}: {
+  readings: Reading[];
+  weightDomain?: WeightDomain;
+}) {
   // Recharts wants numeric X values (milliseconds since epoch) to treat the
   // axis as a true continuous time scale, so ISO timestamp strings get
   // converted here rather than passed through as-is.
@@ -154,7 +166,7 @@ export default function WeightChart({ readings }: { readings: Reading[] }) {
           />
           <YAxis
             dataKey="averageWeight"
-            domain={["auto", "auto"]}
+            domain={weightDomain}
             tickFormatter={(v) => `${v} kg`}
             stroke="var(--baseline)"
             tick={{ fill: "var(--text-muted)", fontSize: 12 }}

@@ -6,8 +6,8 @@
 
 "use client";
 
-import { useEffect, useState } from "react";
-import WeightChart from "./WeightChart";
+import { useEffect, useMemo, useState } from "react";
+import WeightChart, { type WeightDomain } from "./WeightChart";
 
 // The shape of one row as it travels from the server (app/page.tsx) or the
 // API route (app/api/readings/route.ts) down into this component.
@@ -21,6 +21,21 @@ export interface Reading {
 // sessions land every few minutes at most, so polling every 30s is frequent
 // enough to feel "live" without hammering the server.
 const POLL_INTERVAL_MS = 30_000;
+
+// Preset time windows for the chart/table, applied against "now" at render
+// time. "all" (ms: null) means no filtering at all — the full history.
+// Filtering happens client-side rather than as an API query param: at this
+// project's scale (a handful of sessions a day) shipping the full history
+// to the browser and slicing it there is simpler than keeping an API route,
+// the SSR query in page.tsx, and client state all in sync over a `range`
+// param, and it keeps every range change instant with no network round trip.
+type TimeRangeKey = "24h" | "7d" | "30d" | "all" | "custom";
+
+const TIME_RANGE_PRESETS: { key: TimeRangeKey; label: string; ms: number }[] = [
+  { key: "24h", label: "24h", ms: 24 * 60 * 60 * 1000 },
+  { key: "7d", label: "7d", ms: 7 * 24 * 60 * 60 * 1000 },
+  { key: "30d", label: "30d", ms: 30 * 24 * 60 * 60 * 1000 },
+];
 
 // "Aug 9, 2026, 2:30 PM" — used for the stat tile and the table rows.
 function formatDateTime(iso: string) {
@@ -56,6 +71,65 @@ export default function Dashboard({
   // below.
   const [readings, setReadings] = useState(initialReadings);
   const [showTable, setShowTable] = useState(false);
+
+  // Defaults to "all" — until there's real history, there's nothing to
+  // usefully restrict, and someone with an empty dashboard shouldn't have
+  // to notice a range filter is on before their first reading shows up.
+  const [timeRangeKey, setTimeRangeKey] = useState<TimeRangeKey>("all");
+  // Held as the raw `<input type="datetime-local">` strings (not Dates) so
+  // the inputs stay controlled and round-trip cleanly — only parsed into
+  // timestamps inside the filter below.
+  const [customFrom, setCustomFrom] = useState("");
+  const [customTo, setCustomTo] = useState("");
+
+  // Y-axis bounds for the chart. Empty string means "auto" (Recharts fits
+  // the axis to whatever data is visible) — kept as strings rather than
+  // `number | null` so the inputs can hold intermediate typing states like
+  // "-" or "12." without fighting the user mid-keystroke.
+  const [minWeight, setMinWeight] = useState("");
+  const [maxWeight, setMaxWeight] = useState("");
+
+  // The "current time" the preset ranges (24h/7d/30d) are measured back
+  // from. `Date.now()` can't be called directly in the memo below — render
+  // has to be a pure function of props/state, and Date.now() is impure (two
+  // calls in the same render can return different values) — so it's read
+  // once via this lazy initializer (allowed to be impure; it only runs
+  // once, on mount) and refreshed on the same cadence as the reading poll,
+  // since the cutoffs only need "roughly now," not sub-second, precision.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const interval = setInterval(() => setNow(Date.now()), POLL_INTERVAL_MS);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Readings restricted to the selected time range. Only affects the chart
+  // and table below — the "Latest weight" stat tile intentionally keeps
+  // reading from the unfiltered `readings` array, since it's meant to show
+  // hive status right now regardless of what window someone's looking at.
+  const visibleReadings = useMemo(() => {
+    if (timeRangeKey === "all") return readings;
+
+    let sinceMs = -Infinity;
+    let untilMs = Infinity;
+    if (timeRangeKey === "custom") {
+      if (customFrom) sinceMs = new Date(customFrom).getTime();
+      if (customTo) untilMs = new Date(customTo).getTime();
+    } else {
+      const preset = TIME_RANGE_PRESETS.find((p) => p.key === timeRangeKey);
+      sinceMs = now - (preset?.ms ?? 0);
+    }
+
+    return readings.filter((r) => {
+      const t = new Date(r.timestamp).getTime();
+      return t >= sinceMs && t <= untilMs;
+    });
+  }, [readings, timeRangeKey, customFrom, customTo, now]);
+
+  const weightDomain: WeightDomain = [
+    minWeight === "" ? "auto" : Number(minWeight),
+    maxWeight === "" ? "auto" : Number(maxWeight),
+  ];
+  const hasWeightRange = minWeight !== "" || maxWeight !== "";
 
   // Re-fetches readings from /api/readings every POLL_INTERVAL_MS so new
   // sessions the watcher ingests show up without a manual page refresh.
@@ -144,9 +218,123 @@ export default function Dashboard({
           </button>
         </div>
 
+        {/* Range controls. Time range affects both the chart and the table
+            below (it's a real filter on which readings are in view), while
+            the weight range only makes sense for the chart — it's a Y-axis
+            display bound, not a reason to exclude table rows — so those
+            inputs only render when the chart is what's showing. */}
+        <div className="mb-3 flex flex-col gap-2 border-b border-[var(--gridline)] pb-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
+          <div className="flex flex-wrap gap-1">
+            {TIME_RANGE_PRESETS.map((preset) => (
+              <button
+                key={preset.key}
+                onClick={() => setTimeRangeKey(preset.key)}
+                className={`rounded-md px-2.5 py-1 text-xs font-medium ${
+                  timeRangeKey === preset.key
+                    ? "bg-[var(--series-1)] text-white"
+                    : "text-[var(--text-muted)] hover:bg-[var(--series-1-wash)] hover:text-[var(--foreground)]"
+                }`}
+              >
+                {preset.label}
+              </button>
+            ))}
+            <button
+              onClick={() => setTimeRangeKey("all")}
+              className={`rounded-md px-2.5 py-1 text-xs font-medium ${
+                timeRangeKey === "all"
+                  ? "bg-[var(--series-1)] text-white"
+                  : "text-[var(--text-muted)] hover:bg-[var(--series-1-wash)] hover:text-[var(--foreground)]"
+              }`}
+            >
+              All
+            </button>
+            <button
+              onClick={() => setTimeRangeKey("custom")}
+              className={`rounded-md px-2.5 py-1 text-xs font-medium ${
+                timeRangeKey === "custom"
+                  ? "bg-[var(--series-1)] text-white"
+                  : "text-[var(--text-muted)] hover:bg-[var(--series-1-wash)] hover:text-[var(--foreground)]"
+              }`}
+            >
+              Custom
+            </button>
+          </div>
+
+          {timeRangeKey === "custom" && (
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[var(--text-muted)]">
+              <label className="flex items-center gap-1">
+                From
+                <input
+                  type="datetime-local"
+                  value={customFrom}
+                  onChange={(e) => setCustomFrom(e.target.value)}
+                  className="rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 py-1 text-[var(--foreground)]"
+                />
+              </label>
+              <label className="flex items-center gap-1">
+                To
+                <input
+                  type="datetime-local"
+                  value={customTo}
+                  onChange={(e) => setCustomTo(e.target.value)}
+                  className="rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 py-1 text-[var(--foreground)]"
+                />
+              </label>
+            </div>
+          )}
+
+          {!showTable && (
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[var(--text-muted)]">
+              <label className="flex items-center gap-1">
+                Min kg
+                <input
+                  type="number"
+                  step="0.1"
+                  inputMode="decimal"
+                  placeholder="auto"
+                  value={minWeight}
+                  onChange={(e) => setMinWeight(e.target.value)}
+                  className="w-16 rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 py-1 text-[var(--foreground)]"
+                />
+              </label>
+              <label className="flex items-center gap-1">
+                Max kg
+                <input
+                  type="number"
+                  step="0.1"
+                  inputMode="decimal"
+                  placeholder="auto"
+                  value={maxWeight}
+                  onChange={(e) => setMaxWeight(e.target.value)}
+                  className="w-16 rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 py-1 text-[var(--foreground)]"
+                />
+              </label>
+              {hasWeightRange && (
+                <button
+                  onClick={() => {
+                    setMinWeight("");
+                    setMaxWeight("");
+                  }}
+                  className="text-[var(--series-1)] hover:underline"
+                >
+                  Reset
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+
         {readings.length === 0 ? (
           <div className="flex h-[280px] items-center justify-center text-[var(--text-muted)] sm:h-[360px]">
             No data yet
+          </div>
+        ) : visibleReadings.length === 0 ? (
+          // Distinct from the "no data yet" case above — the watcher has
+          // ingested readings, they just don't fall inside the selected
+          // time range, which is a much more common thing to hit (picking
+          // a Custom range with nothing in it) than a truly empty dashboard.
+          <div className="flex h-[280px] items-center justify-center text-[var(--text-muted)] sm:h-[360px]">
+            No readings in this range
           </div>
         ) : showTable ? (
           // Newest-first in the table (opposite of the chart's oldest-first
@@ -163,7 +351,7 @@ export default function Dashboard({
                 </tr>
               </thead>
               <tbody>
-                {[...readings]
+                {[...visibleReadings]
                   .reverse()
                   .map((r) => (
                     <tr
@@ -182,7 +370,7 @@ export default function Dashboard({
             </table>
           </div>
         ) : (
-          <WeightChart readings={readings} />
+          <WeightChart readings={visibleReadings} weightDomain={weightDomain} />
         )}
       </div>
     </div>
