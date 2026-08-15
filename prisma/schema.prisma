@@ -15,6 +15,37 @@ datasource db {
   provider = "postgresql"
 }
 
+// Auth: email/password only (next-auth v5's Credentials provider), no
+// OAuth providers - so no @auth/prisma-adapter and no Account/Session/
+// VerificationToken tables. (Auth.js's Credentials provider doesn't
+// support database sessions at all - only JWT - which is also why those
+// tables wouldn't do anything useful here even if present: see
+// https://authjs.dev/getting-started/authentication/credentials.)
+// Session "revocability" without a sessions table: auth.ts's jwt callback
+// re-reads the user's current role from this table on every request, so a
+// role change (or a user getting removed) takes effect on their very next
+// request rather than only after their token expires.
+enum UserRole {
+  ADMIN
+  VIEWER
+}
+
+model User {
+  id    String @id @default(cuid())
+  name  String?
+  email String  @unique
+
+  // Never the plaintext password.
+  hashedPassword String
+
+  // Only an ADMIN can reach /admin (manage Pis/boards/SSH credentials).
+  // Everyone else is a read-only VIEWER, scoped to Pis assigned to them
+  // (Pi.userId) - see Pi model, added in a later migration.
+  role UserRole @default(VIEWER)
+
+  createdAt DateTime @default(now())
+}
+
 // One row per ingested F' weight session (see lib/ingest.ts for how a raw
 // JSON telemetry file becomes one of these rows).
 model WeightReading {
