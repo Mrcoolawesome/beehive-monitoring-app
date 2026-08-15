@@ -31,6 +31,51 @@ const POLL_INTERVAL_MS = 30_000;
 // param, and it keeps every range change instant with no network round trip.
 type TimeRangeKey = "24h" | "7d" | "30d" | "all" | "custom";
 
+// A short, filename-safe token describing the selected range, so a
+// downloaded CSV's name alone tells you what's in it without opening it —
+// "hive-weight-24h.csv" vs. "hive-weight-2026-08-01T00-00_to_2026-08-15T00-00.csv".
+// datetime-local values (e.g. "2026-08-15T10:30") are already filename-safe
+// except for the colon, which most filesystems reject.
+function rangeFilenameToken(
+  key: TimeRangeKey,
+  customFrom: string,
+  customTo: string,
+) {
+  if (key !== "custom") return key;
+  const from = (customFrom || "start").replaceAll(":", "-");
+  const to = (customTo || "now").replaceAll(":", "-");
+  return `${from}_to_${to}`;
+}
+
+// Builds a CSV from readings and triggers a browser download of it. Kept as
+// a plain function (not a hook) since it has no reactive state of its own —
+// it's only ever called from the click handler below, with whatever
+// readings/filename are current at that moment.
+function downloadReadingsCsv(readings: Reading[], filename: string) {
+  // Neither field can contain a comma or quote (timestamp is a fixed ISO
+  // format, averageWeight is a plain number), so no CSV quoting/escaping is
+  // needed here.
+  const lines = [
+    "timestamp,averageWeightKg",
+    ...readings.map((r) => `${r.timestamp},${r.averageWeight}`),
+  ];
+  const blob = new Blob([lines.join("\n")], {
+    type: "text/csv;charset=utf-8;",
+  });
+  const url = URL.createObjectURL(blob);
+  // No visible <a> in the DOM triggers a download on its own — browsers
+  // only honor the `download` attribute on a real click, so one gets
+  // created, clicked, and torn down immediately rather than needing a
+  // permanent hidden link sitting in the page.
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
 const TIME_RANGE_PRESETS: { key: TimeRangeKey; label: string; ms: number }[] = [
   { key: "24h", label: "24h", ms: 24 * 60 * 60 * 1000 },
   { key: "7d", label: "7d", ms: 7 * 24 * 60 * 60 * 1000 },
@@ -207,15 +252,29 @@ export default function Dashboard({
             Weight over time
           </h2>
           {/* Padded to a comfortable touch target (not just underlined
-              text) since this is the one interactive control on a page
-              that's otherwise just for reading — worth making it easy to
+              text) since these are the interactive controls on a page
+              that's otherwise just for reading — worth making them easy to
               tap accurately on a phone. */}
-          <button
-            onClick={() => setShowTable((v) => !v)}
-            className="-mx-2 -my-1 rounded-md px-2 py-1 text-sm text-[var(--series-1)] hover:underline active:bg-[var(--series-1-wash)]"
-          >
-            {showTable ? "Show chart" : "Show table"}
-          </button>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() =>
+                downloadReadingsCsv(
+                  visibleReadings,
+                  `hive-weight-${rangeFilenameToken(timeRangeKey, customFrom, customTo)}.csv`,
+                )
+              }
+              disabled={visibleReadings.length === 0}
+              className="-mx-2 -my-1 rounded-md px-2 py-1 text-sm text-[var(--series-1)] hover:underline active:bg-[var(--series-1-wash)] disabled:text-[var(--text-muted)] disabled:hover:no-underline"
+            >
+              Download CSV
+            </button>
+            <button
+              onClick={() => setShowTable((v) => !v)}
+              className="-mx-2 -my-1 rounded-md px-2 py-1 text-sm text-[var(--series-1)] hover:underline active:bg-[var(--series-1-wash)]"
+            >
+              {showTable ? "Show chart" : "Show table"}
+            </button>
+          </div>
         </div>
 
         {/* Range controls. Time range affects both the chart and the table
