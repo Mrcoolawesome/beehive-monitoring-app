@@ -30,6 +30,7 @@ unit_file="$unit_dir/beehive-deployer.service"
 # node) - run it directly as the executable, not as `node <this file>`,
 # which fails since it isn't JavaScript.
 tsx_bin="$repo_root/node_modules/.bin/tsx"
+prisma_bin="$repo_root/node_modules/.bin/prisma"
 
 if [[ ! -e "$beehive_project_dir/.git" ]]; then
     echo "Not a git checkout: $beehive_project_dir" >&2
@@ -60,6 +61,19 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=$repo_root
 Environment=BEEHIVE_PROJECT_DIR=$beehive_project_dir
+# Regenerates app/generated/prisma from the CURRENT schema.prisma/migrations
+# before every start - this checkout isn't in a container that gets
+# rebuilt on every \`git pull\` like web/watcher/migrate are, so without
+# this the deployer would keep running against whatever Prisma Client was
+# generated the last time someone happened to run \`prisma generate\` by
+# hand here, silently rejecting any enum value or column a newer migration
+# added (caught live: SCAN_FOR_BOARDS existed in the database but the
+# stale client didn't know about it, so every poll crashed the whole
+# process on prisma.pi.findMany()). Cheap enough (a few hundred ms) to pay
+# on every restart rather than trying to detect "did the schema actually
+# change" - Restart=always means this also self-heals after a manual
+# \`git pull\` + restart, not just at install time.
+ExecStartPre=$prisma_bin generate
 ExecStart=$tsx_bin $repo_root/scripts/deployer.ts
 Restart=always
 RestartSec=10
