@@ -1,8 +1,13 @@
--- CreateEnum
-CREATE TYPE "PiStatus" AS ENUM ('PENDING_SETUP', 'ACTIVE', 'DISABLED');
+-- CreateEnum (guarded: Postgres has no CREATE TYPE IF NOT EXISTS, and this
+-- migration has proven to sometimes partially apply on devin-server's DB -
+-- see the commit that added these guards)
+DO $$ BEGIN
+  CREATE TYPE "PiStatus" AS ENUM ('PENDING_SETUP', 'ACTIVE', 'DISABLED');
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
 
 -- CreateTable
-CREATE TABLE "Pi" (
+CREATE TABLE IF NOT EXISTS "Pi" (
     "id" TEXT NOT NULL,
     "name" TEXT NOT NULL,
     "userId" TEXT NOT NULL,
@@ -22,7 +27,7 @@ CREATE TABLE "Pi" (
 );
 
 -- CreateTable
-CREATE TABLE "Board" (
+CREATE TABLE IF NOT EXISTS "Board" (
     "id" TEXT NOT NULL,
     "piId" TEXT NOT NULL,
     "bluetoothMac" TEXT NOT NULL,
@@ -34,7 +39,7 @@ CREATE TABLE "Board" (
 );
 
 -- CreateTable
-CREATE TABLE "ServerConfig" (
+CREATE TABLE IF NOT EXISTS "ServerConfig" (
     "id" TEXT NOT NULL,
     "host" TEXT NOT NULL,
     "updatedAt" TIMESTAMP(3) NOT NULL,
@@ -43,19 +48,25 @@ CREATE TABLE "ServerConfig" (
 );
 
 -- CreateIndex
-CREATE UNIQUE INDEX "Pi_assignedPort_key" ON "Pi"("assignedPort");
+CREATE UNIQUE INDEX IF NOT EXISTS "Pi_assignedPort_key" ON "Pi"("assignedPort");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "Board_piId_slotIndex_key" ON "Board"("piId", "slotIndex");
+CREATE UNIQUE INDEX IF NOT EXISTS "Board_piId_slotIndex_key" ON "Board"("piId", "slotIndex");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "Board_piId_bluetoothMac_key" ON "Board"("piId", "bluetoothMac");
+CREATE UNIQUE INDEX IF NOT EXISTS "Board_piId_bluetoothMac_key" ON "Board"("piId", "bluetoothMac");
+
+-- AddForeignKey (guarded - see the CreateEnum comment above)
+DO $$ BEGIN
+  ALTER TABLE "Pi" ADD CONSTRAINT "Pi_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
 
 -- AddForeignKey
-ALTER TABLE "Pi" ADD CONSTRAINT "Pi_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
-
--- AddForeignKey
-ALTER TABLE "Board" ADD CONSTRAINT "Board_piId_fkey" FOREIGN KEY ("piId") REFERENCES "Pi"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+DO $$ BEGIN
+  ALTER TABLE "Board" ADD CONSTRAINT "Board_piId_fkey" FOREIGN KEY ("piId") REFERENCES "Pi"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
 
 -- Add boardId nullable first, not NOT NULL yet - existing WeightReading rows
 -- (captured before per-board attribution existed, tagged only by a flat
@@ -65,7 +76,7 @@ ALTER TABLE "Board" ADD CONSTRAINT "Board_piId_fkey" FOREIGN KEY ("piId") REFERE
 -- existing data to attach it to - a fresh install with no WeightReading
 -- rows yet skips all of this and just ends up with boardId NOT NULL on an
 -- empty table, same as if it had been declared NOT NULL from the start.
-ALTER TABLE "WeightReading" ADD COLUMN "boardId" TEXT;
+ALTER TABLE "WeightReading" ADD COLUMN IF NOT EXISTS "boardId" TEXT;
 
 DO $$
 DECLARE
@@ -91,14 +102,17 @@ BEGIN
 END $$;
 
 -- DropIndex
-DROP INDEX "WeightReading_piMacAddress_timestamp_key";
+DROP INDEX IF EXISTS "WeightReading_piMacAddress_timestamp_key";
 
 -- AlterTable
-ALTER TABLE "WeightReading" DROP COLUMN "piMacAddress",
+ALTER TABLE "WeightReading" DROP COLUMN IF EXISTS "piMacAddress",
 ALTER COLUMN "boardId" SET NOT NULL;
 
 -- CreateIndex
-CREATE UNIQUE INDEX "WeightReading_boardId_timestamp_key" ON "WeightReading"("boardId", "timestamp");
+CREATE UNIQUE INDEX IF NOT EXISTS "WeightReading_boardId_timestamp_key" ON "WeightReading"("boardId", "timestamp");
 
 -- AddForeignKey
-ALTER TABLE "WeightReading" ADD CONSTRAINT "WeightReading_boardId_fkey" FOREIGN KEY ("boardId") REFERENCES "Board"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+DO $$ BEGIN
+  ALTER TABLE "WeightReading" ADD CONSTRAINT "WeightReading_boardId_fkey" FOREIGN KEY ("boardId") REFERENCES "Board"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
