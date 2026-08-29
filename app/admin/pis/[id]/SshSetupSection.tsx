@@ -32,7 +32,16 @@ export default function SshSetupSection({
   sshUser: string;
   resolvedIp: string | null;
   sshPublicKey: string | null;
-  pendingAction: "RESYNC_IP" | "INITIAL_SETUP" | "REDEPLOY" | null;
+  // "SCAN_FOR_BOARDS" is a real PiPendingAction value but not one this
+  // section renders anything for (BoardsSection has its own indicator for
+  // it) - included here so the page can pass pi.pendingAction straight
+  // through without narrowing it first.
+  pendingAction:
+    | "RESYNC_IP"
+    | "INITIAL_SETUP"
+    | "REDEPLOY"
+    | "SCAN_FOR_BOARDS"
+    | null;
   lastActionError: string | null;
 }) {
   const target = resolvedIp ?? "<not resolved yet>";
@@ -69,7 +78,7 @@ export default function SshSetupSection({
             <form action={requestRedeployAction.bind(null, piId)}>
               <ActionButton label="Redeploy now" pendingLabel="Requesting…" />
             </form>
-            {pendingAction && (
+            {pendingAction && pendingAction !== "SCAN_FOR_BOARDS" && (
               <span className="text-sm text-[var(--text-muted)]">
                 {
                   {

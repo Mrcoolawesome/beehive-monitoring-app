@@ -85,7 +85,17 @@ export default async function PiDetailPage({
         <h2 className="mb-3 text-sm font-medium text-[var(--text-secondary)]">
           Boards
         </h2>
-        <BoardsSection piId={pi.id} boards={pi.boards} maxSlots={MAX_SLOTS} />
+        <BoardsSection
+          piId={pi.id}
+          boards={pi.boards}
+          maxSlots={MAX_SLOTS}
+          pendingAction={pi.pendingAction}
+          // Written by deployer.ts as exactly {mac, discoveredAt}[] (see
+          // requestScanForBoardsAction/handleScanForBoards) - Prisma's Json
+          // column type is opaque at compile time, so this cast reflects
+          // that contract rather than something the type system verifies.
+          lastScanResults={pi.lastScanResults as { mac: string; discoveredAt: string }[] | null}
+        />
       </div>
     </div>
   );

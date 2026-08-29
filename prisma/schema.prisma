@@ -88,6 +88,15 @@ enum PiPendingAction {
   // origin/main moves - this is the manual trigger for the other case that
   // doesn't involve a new commit: the admin changed this Pi's boards.
   REDEPLOY
+  // "Sync mode" - see the admin panel's "Scan for new board" button and
+  // deployer.ts's handleScanForBoards(). Runs a bounded bluetoothctl scan
+  // on the Pi (over SSH, independent of the running beedeployment.service -
+  // no flight-software or GDS protocol changes needed for this) so the
+  // admin doesn't need to already know a new board's MAC address (which
+  // isn't printed anywhere convenient) - they press the board's physical
+  // sync button while this runs, and the discovered MAC shows up in the
+  // admin panel to add as a Board.
+  SCAN_FOR_BOARDS
 }
 
 model Pi {
@@ -131,6 +140,16 @@ model Pi {
   // seeming to do nothing. Cleared automatically the next time an action
   // is requested.
   lastActionError String?
+
+  // Result of the most recent SCAN_FOR_BOARDS action - an array of
+  // {mac, discoveredAt} objects (Json, not a table: this is a small,
+  // disposable, single-admin-workflow result, not data anything else ever
+  // queries). Cleared to null the moment a new scan is requested (not just
+  // overwritten when one completes), so the admin panel never shows stale
+  // results as if they were from the scan just requested - see
+  // requestScanForBoardsAction.
+  lastScanResults Json?
+  lastScanAt      DateTime?
 
   boards Board[]
 

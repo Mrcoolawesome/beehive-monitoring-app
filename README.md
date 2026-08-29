@@ -246,7 +246,16 @@ handled (see `PiPendingAction` in `prisma/schema.prisma`).
    physical step — same action as a normal `ssh-copy-id`, just against a
    key the app generated instead of your own).
 4. **Add board(s)** for the Pi (Bluetooth MAC, label, slot 0–3) if you
-   haven't already.
+   haven't already. Don't already know a new board's MAC (it isn't printed
+   anywhere convenient)? Click **"Scan for new board"** and press the sync
+   button inside the board's battery compartment while it runs (~20s) —
+   this queues `SCAN_FOR_BOARDS`; the deployer runs a bounded `bluetoothctl`
+   scan on the Pi over SSH (independent of whatever `beedeployment.service`
+   is doing with its own already-configured boards — no flight-software or
+   GDS protocol involved) and any newly-discovered board's MAC shows up
+   with a "Use this MAC" button that fills it into the form below, so you
+   still choose the label/slot yourself rather than it being added
+   automatically.
 5. Once the public key is installed on the Pi, click **"Run initial
    setup."** This queues `INITIAL_SETUP`; the deployer resolves the Pi's
    IP if needed, uploads the `aarch64-linux` binary + `boot_dp_downlink.bin`

@@ -113,6 +113,30 @@ export async function requestRedeployAction(piId: string, _formData: FormData) {
   revalidatePath(`/admin/pis/${piId}`);
 }
 
+// "Sync mode" - see the PiPendingAction.SCAN_FOR_BOARDS comment in
+// prisma/schema.prisma. Clears lastScanResults here (not just leaving it
+// for deployer.ts to overwrite once the scan finishes) so the admin panel
+// never shows a previous scan's results as if they belonged to this one -
+// there'd otherwise be a real window (however many seconds until the next
+// deployer poll, plus the ~20s scan itself) where stale results and a
+// "Scanning..." indicator would be on screen together.
+export async function requestScanForBoardsAction(
+  piId: string,
+  _formData: FormData,
+) {
+  await requireAdmin();
+  await prisma.pi.update({
+    where: { id: piId },
+    data: {
+      pendingAction: "SCAN_FOR_BOARDS",
+      pendingActionRequestedAt: new Date(),
+      lastActionError: null,
+      lastScanResults: Prisma.JsonNull,
+    },
+  });
+  revalidatePath(`/admin/pis/${piId}`);
+}
+
 const reassignUserSchema = z.object({
   piId: z.string().min(1),
   userId: z.string().min(1, "Select a user"),

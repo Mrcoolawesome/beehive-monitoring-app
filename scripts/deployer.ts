@@ -341,6 +341,68 @@ async function redeployToPi(pi: Pi) {
   console.log(`[redeploy] ${pi.name} redeployed (sha ${sha.slice(0, 8)})`);
 }
 
+// How long to hold the Pi in an active bluetoothctl scan for
+// SCAN_FOR_BOARDS - matches DISCOVERY_SCAN_SECONDS in
+// Components/WiiBoardManager/WiiBoardManager.cpp, the window already
+// tuned for this exact board model to reliably show up in a scan after
+// its physical sync button is pressed.
+const SCAN_DURATION_SECONDS = 20;
+
+// Matches WiiBoardManager.cpp's BOARD_NAME constant - what this board
+// model reports as its Bluetooth device name.
+const BOARD_PRODUCT_NAME = "Nintendo Wii Remote Balance Board";
+
+async function handleScanForBoards(pi: Pi) {
+  const resolved = await resyncIfNeeded(pi);
+  const existingBoards = await prisma.board.findMany({ where: { piId: pi.id } });
+  const alreadyOnThisPi = new Set(existingBoards.map((b) => b.bluetoothMac));
+
+  const output = await withPiKeyFile(resolved, (keyPath) =>
+    sshExec(
+      resolved,
+      keyPath,
+      // One long-lived bluetoothctl process fed a command sequence over
+      // stdin, not a one-shot `bluetoothctl scan on` CLI invocation -
+      // BlueZ ties an active discovery session to the requesting client's
+      // D-Bus connection, so a process that exits immediately after
+      // issuing "scan on" stops discovery the instant it exits. Same
+      // reasoning as WiiBoardManager.cpp's own popen()-based handling,
+      // just shelled out over SSH instead of from the flight binary -
+      // this runs independently of whatever beedeployment.service is
+      // doing with its own already-configured boards.
+      `{ echo "scan on"; sleep ${SCAN_DURATION_SECONDS}; echo "devices"; echo "scan off"; echo "quit"; } | bluetoothctl`,
+    ),
+  );
+
+  // bluetoothctl's `devices` output lines look like:
+  //   Device 00:1F:32:22:03:BF Nintendo Wii Remote Balance Board
+  const found = new Set<string>();
+  for (const line of output.split("\n")) {
+    const match = line.match(/^Device\s+([0-9A-Fa-f:]{17})\s+(.*)$/);
+    if (match && match[2].includes(BOARD_PRODUCT_NAME)) {
+      found.add(match[1].toUpperCase());
+    }
+  }
+  // Only genuinely new boards - one already added to this Pi showing up
+  // again (it's realistically still nearby) isn't a useful "discovery."
+  const newMacs = [...found].filter((mac) => !alreadyOnThisPi.has(mac));
+
+  await prisma.pi.update({
+    where: { id: pi.id },
+    data: {
+      lastScanResults: newMacs.map((mac) => ({
+        mac,
+        discoveredAt: new Date().toISOString(),
+      })),
+      lastScanAt: new Date(),
+    },
+  });
+  console.log(
+    `[scan] ${pi.name}: found ${newMacs.length} new board(s)` +
+      (newMacs.length ? ` - ${newMacs.join(", ")}` : ""),
+  );
+}
+
 async function handlePendingActions() {
   const pis = await prisma.pi.findMany({ where: { pendingAction: { not: null } } });
   for (const pi of pis) {
@@ -352,6 +414,8 @@ async function handlePendingActions() {
         await handleInitialSetup(pi);
       } else if (action === "REDEPLOY") {
         await redeployToPi(pi);
+      } else if (action === "SCAN_FOR_BOARDS") {
+        await handleScanForBoards(pi);
       }
       await prisma.pi.update({
         where: { id: pi.id },
