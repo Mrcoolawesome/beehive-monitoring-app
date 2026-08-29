@@ -71,35 +71,31 @@ The full pipeline spans two repos — this one, and the sibling
 
 ## Running with Docker (recommended for a server)
 
-`docker compose up -d --build` brings up the **entire pipeline described
-above** — not just this repo's half of it. `docker-compose.yml` includes
-`../beehive-project/docker-compose.yml` (Compose's `include:`, not a git
-submodule — the two repos stay independently versioned), which contributes
-two services: `gds` (the F´ ground station, receives the Pi's downlink) and
-`decoder` (turns its raw `.fdp` output into the `.json` this repo's watcher
-reads). Alongside those, this repo's own `Dockerfile` builds one image
-reused by three services — `db` doesn't count, that's stock Postgres:
+`docker compose up -d --build` brings up **this repo's half of the
+pipeline** — `db`, `migrate`, `web`, `watcher`. This repo's own
+`Dockerfile` builds one image reused by all three app services (`db`
+doesn't count, that's stock Postgres):
 
 - `db` — Postgres 18, with its own persistent volume
 - `migrate` — one-shot job, applies Prisma migrations before `web`/`watcher`
   start
 - `web` — the dashboard
 - `watcher` — the ingestion process described above
-- `gds` / `decoder` — from `../beehive-project`, see that repo's README for
-  what they do in more depth
 
-**Requires `../beehive-project` to exist as a sibling directory** (i.e. this
-repo and that one checked out next to each other, same as for local dev) —
-`include:` resolves that path relative to this repo's `docker-compose.yml`.
-The `beehive-stack` umbrella repo (both repos as git submodules) gives you
-exactly this layout for free — see its README — but isn't required; a
-plain sibling checkout of the two repos works the same way.
+The F´ ground station (GDS/decoder) is **not** part of this compose file.
+It used to be — a single shared `gds`/`decoder` pair, pulled in from
+`../beehive-project`'s own `docker-compose.yml` via Compose's `include:` —
+but that stopped making sense once fleet management shipped: every
+registered Pi now gets its own dedicated `beehive-gds-<piId>`/
+`beehive-decoder-<piId>` container pair, created automatically by
+`scripts/deployer.ts` (see "Fleet management" below), not by `docker
+compose up`. Register a Pi in `/admin/pis` to get one running against it.
 
 **If you previously set up `beehive-project`'s systemd decoder service**
-(`beehive-dpcat-decode.service`), stop and disable it before running the
-Docker stack — it does the exact same job as the `decoder` service above
-against the same directory, and running both is redundant (see the note in
-`../beehive-project/README.md` section 6):
+(`beehive-dpcat-decode.service`) for a Pi that's now fleet-managed, stop
+and disable it — `scripts/deployer.ts`'s per-Pi decoder container does the
+same job against the same Pi's `DpCat/<piId>/` directory, and running both
+is redundant (see the note in `../beehive-project/README.md` section 6):
 
 ```bash
 systemctl --user disable --now beehive-dpcat-decode.service
@@ -109,11 +105,14 @@ systemctl --user disable --now beehive-dpcat-decode.service
    - `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` — credentials for
      the stack's own Postgres container (a separate database from any
      Postgres already installed on the host — no conflict either way).
-   - `WATCH_DIR` — the **host** directory F´ writes JSON files into. In the
-     combined stack this should point at `../beehive-project/DpCat` — the
-     same directory `gds`/`decoder` write to — so this repo's watcher
-     actually sees what F´ produces. Bind-mounted into the watcher
-     container; see `docker-compose.yml` for exactly how.
+   - `WATCH_DIR` — the **host** directory this repo's watcher reads decoded
+     JSON from. Once a Pi is registered and active (see "Fleet management"
+     below), this is `<BEEHIVE_PROJECT_DIR>/DpCat/<piId>/fprime-downlink` —
+     that specific Pi's decoder container's output directory. Chicken-and-egg
+     at first setup: you need the Pi registered (to know its id) before you
+     can fill this in, so it's normal to come back and set this (and
+     `PI_ID` below) after "Fleet management"'s steps, not before. Bind-mounted
+     into the watcher container; see `docker-compose.yml` for exactly how.
    - `PI_ID` — which registered Pi (see Data model above) this watcher
      instance ingests readings for. Register the Pi and give it exactly one
      board in `/admin` first — the watcher fails fast at startup otherwise.
@@ -124,15 +123,7 @@ systemctl --user disable --now beehive-dpcat-decode.service
      container writes into `WATCH_DIR` as this user so the files it moves
      around stay owned by you, not root.
 
-2. On the host (not in a container — this needs the actual F´ build
-   toolchain), build the deployment GDS reads its dictionary from, if you
-   haven't already:
-
-   ```bash
-   cd ../beehive-project && fprime-util build aarch64-linux
-   ```
-
-3. Build and start everything:
+2. Build and start:
 
    ```bash
    docker compose up -d --build
@@ -142,11 +133,15 @@ systemctl --user disable --now beehive-dpcat-decode.service
    only applies migrations that haven't already been applied). `web` and
    `watcher` both wait for it to finish successfully before starting, so
    there's no race against a database that doesn't have the `WeightReading`
-   table yet on a fresh volume.
+   table yet on a fresh volume. `watcher` will crash-loop harmlessly until
+   `PI_ID`/`WATCH_DIR` point at a real, registered, single-board Pi.
 
-4. Open `http://<server>:3000` for the dashboard, `http://<server>:5000` for
-   the GDS web GUI. Watch logs with `docker compose logs -f watcher` (or
-   `web`, `db`, `gds`, `decoder`).
+3. Open `http://<server>:${WEB_PORT:-3000}` for the dashboard. Watch logs
+   with `docker compose logs -f watcher` (or `web`, `db`).
+
+4. Follow "Fleet management" below to register a Pi through `/admin/pis` —
+   that's what actually gets a GDS/decoder pair (and eventually the flight
+   binary on the Pi itself) running.
 
 To update after pulling new code: `docker compose up -d --build` again — it
 rebuilds the image and recreates whatever changed.
@@ -273,9 +268,12 @@ handled (see `PiPendingAction` in `prisma/schema.prisma`).
    than a silent connection failure.
 
 The deployer also creates a **separate Docker container pair per `ACTIVE`
-Pi** — `beehive-gds-<piId>` and `beehive-decoder-<piId>`, both from the
-`beehive-gds:latest` image `../beehive-project/docker-compose.yml` already
-builds — rather than one shared GDS multiple Pis would have to connect
+Pi** — `beehive-gds-<piId>` and `beehive-decoder-<piId>`, both from a
+`beehive-gds:latest` image the deployer builds itself
+(`docker build -t beehive-gds:latest .` in `../beehive-project`, via
+`buildGdsImage()`/`ensureGdsImage()` in `scripts/deployer.ts` — run
+whenever `origin/main` moves, and once up front if the image doesn't
+exist yet) — rather than one shared GDS multiple Pis would have to connect
 into (`reconcileDockerContainers()`). Each Pi's GDS listens on its own
 `assignedPort` (comm link) and `assignedPort + 10000` (web GUI), with its
 own `../beehive-project/DpCat/<piId>/` and `logs/<piId>/` on disk so

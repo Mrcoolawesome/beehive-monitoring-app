@@ -1,25 +1,22 @@
-# Brings up the WHOLE pipeline, from the F' ground station through to the
-# dashboard: Postgres, a one-shot migration job, the web dashboard, the
-# ingestion watcher — plus, via `include:` below, the sibling beehive-project
-# repo's own `gds` (fprime-gds, receives the Pi's downlink and writes raw
-# .fdp data-product files) and `decoder` (.fdp -> .json) services.
+# Brings up this repo's half of the pipeline: Postgres, a one-shot
+# migration job, the web dashboard, and the ingestion watcher.
 # `docker compose up -d --build` is the whole setup, once .env has real
 # values (see .env.example) — no separately-managed host Postgres, no
-# manually-run `pnpm` commands, and no separately-run F' tooling.
+# manually-run `pnpm` commands.
 #
-# All three of this repo's app services (migrate/web/watcher) build from and
-# run the same image (see Dockerfile's top comment for why), just with
-# different `command:` overrides.
+# All three services here (migrate/web/watcher) build from and run the
+# same image (see Dockerfile's top comment for why), just with different
+# `command:` overrides.
 #
-# beehive-project is included, not merged into this file or made a git
-# submodule — it stays an independently-versioned sibling repo (../beehive-project),
-# and `include:` (Compose 2.20+) pulls its service definitions in as-is, so
-# there's only one place (its own docker-compose.yml) that ever defines what
-# `gds`/`decoder` actually do. Its relative volume paths (./DpCat, etc.)
-# resolve against ITS directory, not this one — Compose handles that
-# automatically for included files.
-include:
-  - path: ../beehive-project/docker-compose.yml
+# The F' ground station (GDS/decoder) is NOT here. Earlier this ran as a
+# single shared `gds`/`decoder` pair pulled in from the sibling
+# beehive-project repo via Compose's `include:` - that stopped making
+# sense once the fleet deployer (scripts/deployer.ts) started giving each
+# registered Pi its own dedicated gds/decoder container pair instead of
+# one shared instance (see that file and README.md's "Fleet management"
+# section). beehive-project's docker-compose.yml was removed along with
+# it; its Dockerfile is still there (deployer.ts builds `beehive-gds:latest`
+# from it directly, no compose needed for that).
 
 services:
   db:

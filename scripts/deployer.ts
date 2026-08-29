@@ -382,8 +382,32 @@ async function rebuildIfOriginMoved(): Promise<boolean> {
   console.log(`[build] origin/main moved (${local.trim().slice(0, 8)} -> ${remote.trim().slice(0, 8)}), pulling + rebuilding`);
   await run("git", ["merge", "--ff-only", "origin/main"], { cwd: BEEHIVE_PROJECT_DIR });
   await run(FPRIME_UTIL!, ["build", "aarch64-linux"], { cwd: BEEHIVE_PROJECT_DIR });
+  // Also rebuilds the beehive-gds image - a moved origin/main might have
+  // changed the Dockerfile or tools/ just as easily as the flight
+  // software, and there's no separate trigger for that now that this repo
+  // has no docker-compose.yml of its own (see ensureGdsImage() below for
+  // why that went away).
+  await buildGdsImage();
   console.log("[build] rebuild complete");
   return true;
+}
+
+// Builds beehive-gds:latest directly (`docker build`), not via a
+// docker-compose.yml in beehive-project - that file used to exist purely
+// to build+run one shared gds/decoder pair, which stopped making sense
+// once every Pi got its own dedicated pair (see ensureDockerContainers()
+// below) instead of sharing one. This is the one remaining place that
+// image gets built.
+async function buildGdsImage() {
+  await run("docker", ["build", "-t", "beehive-gds:latest", "."], { cwd: BEEHIVE_PROJECT_DIR });
+}
+
+async function ensureGdsImage() {
+  const out = await run("docker", ["images", "-q", "beehive-gds:latest"]);
+  if (out.trim() === "") {
+    console.log("[build] beehive-gds:latest not found, building it now");
+    await buildGdsImage();
+  }
 }
 
 async function redeployActivePis() {
@@ -409,9 +433,8 @@ async function redeployActivePis() {
 // Per-Pi GDS/decoder Docker containers - separate container pair per Pi
 // (not one shared GDS multiple Pis connect to, not plain background
 // processes) - see the "Multi-Pi / multi-board fleet management" plan for
-// why. Reuses the beehive-gds:latest image beehive-project's own
-// docker-compose.yml already builds - build it there first
-// (`docker compose build gds`) before any Pi can go ACTIVE.
+// why. Reuses the beehive-gds:latest image (see buildGdsImage()/
+// ensureGdsImage() above) rather than each Pi getting its own image.
 // ---------------------------------------------------------------------------
 
 async function containerExists(name: string): Promise<boolean> {
@@ -465,6 +488,10 @@ async function teardownDockerContainers(pi: Pi) {
 }
 
 async function reconcileDockerContainers() {
+  // Covers the very first run on a fresh host, where origin/main hasn't
+  // moved yet (so rebuildIfOriginMoved()'s own build never fires) but the
+  // image has never been built at all.
+  await ensureGdsImage();
   const allPis = await prisma.pi.findMany();
   for (const pi of allPis) {
     try {
