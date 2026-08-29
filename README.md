@@ -248,18 +248,16 @@ handled (see `PiPendingAction` in `prisma/schema.prisma`).
 4. **Add board(s)** for the Pi (Bluetooth MAC, label, slot 0–3) if you
    haven't already. Don't already know a new board's MAC (it isn't printed
    anywhere convenient)? Click **"Scan for new board"** and press the sync
-   button inside the board's battery compartment while it runs (~20s) —
-   this queues `SCAN_FOR_BOARDS`; the deployer briefly stops
-   `beedeployment.service` (its own WiiBoardManager instances retry
-   connecting roughly once a second whenever a configured board isn't
-   connected, each attempt cycling `bluetoothctl` scan on/off - left
-   running, that stomps on this scan's own discovery window - confirmed
-   live), runs a bounded `bluetoothctl` scan on the Pi over SSH (no
-   flight-software or GDS protocol involved), then restarts the service.
-   Any newly-discovered board's MAC shows up with a "Use this MAC" button
-   that fills it into the form below, so you
-   still choose the label/slot yourself rather than it being added
-   automatically.
+   button inside the board's battery compartment while it runs (~10-15s) —
+   this queues `SCAN_FOR_BOARDS`, which `scan_for_boards.py` (a small
+   script in `../beehive-project/tools/`) sends as a real F' command to
+   the running flight software over that Pi's GDS instance, the same way
+   its own web GUI would - it's genuinely F'-native, not SSH/bluetoothctl
+   run from outside; see `../beehive-project/README.md`'s "Sync mode"
+   section for the full flight-software-side design. Any newly-discovered
+   board's MAC shows up with a "Use this MAC" button that fills it into
+   the form below, so you still choose the label/slot yourself rather
+   than it being added automatically.
 5. Once the public key is installed on the Pi, click **"Run initial
    setup."** This queues `INITIAL_SETUP`; the deployer resolves the Pi's
    IP if needed, uploads the `aarch64-linux` binary + `boot_dp_downlink.bin`
@@ -288,10 +286,14 @@ Pi** — `beehive-gds-<piId>` and `beehive-decoder-<piId>`, both from a
 whenever `origin/main` moves, and once up front if the image doesn't
 exist yet) — rather than one shared GDS multiple Pis would have to connect
 into (`reconcileDockerContainers()`). Each Pi's GDS listens on its own
-`assignedPort` (comm link) and `assignedPort + 10000` (web GUI), with its
-own `../beehive-project/DpCat/<piId>/` and `logs/<piId>/` on disk so
-multiple Pis' data products and logs never collide. A Pi that's `DISABLED`
-has its containers torn down on the next reconcile pass.
+`assignedPort` (comm link), `assignedPort + 5000` (web GUI), and
+`assignedPort + 10000` (GDS's "threaded TCP socket server" - `--no-zmq
+--tts-port`, the same channel its own web GUI connects through as just
+another client, and what `SCAN_FOR_BOARDS` uses - see step 4 above and
+`../beehive-project/README.md`'s "Sync mode" section), with its own
+`../beehive-project/DpCat/<piId>/` and `logs/<piId>/` on disk so multiple
+Pis' data products and logs never collide. A Pi that's `DISABLED` has its
+containers torn down on the next reconcile pass.
 
 Run the deployer with `pnpm deploy`, or install it as a persistent service
 with [`tools/install_deployer_service.sh`](tools/install_deployer_service.sh)
