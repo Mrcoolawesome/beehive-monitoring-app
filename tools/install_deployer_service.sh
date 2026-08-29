@@ -26,7 +26,9 @@ beehive_project_dir="${1:-$(cd "$repo_root/../beehive-project" && pwd)}"
 
 unit_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 unit_file="$unit_dir/beehive-deployer.service"
-node_bin="$(command -v node)"
+# node_modules/.bin/tsx is a shell shim (its own shebang picks the right
+# node) - run it directly as the executable, not as `node <this file>`,
+# which fails since it isn't JavaScript.
 tsx_bin="$repo_root/node_modules/.bin/tsx"
 
 if [[ ! -e "$beehive_project_dir/.git" ]]; then
@@ -58,7 +60,7 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=$repo_root
 Environment=BEEHIVE_PROJECT_DIR=$beehive_project_dir
-ExecStart=$node_bin $tsx_bin $repo_root/scripts/deployer.ts
+ExecStart=$tsx_bin $repo_root/scripts/deployer.ts
 Restart=always
 RestartSec=10
 
