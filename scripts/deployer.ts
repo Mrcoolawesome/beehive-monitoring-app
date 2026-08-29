@@ -57,11 +57,16 @@ const SLOT_COUNT = 4;
 
 // GDS web GUI port per Pi, derived from its assigned comm-link port so
 // nothing extra needs to be stored - e.g. assignedPort 50001 (comm link)
-// gets GUI port 60001. Only used for `docker run`'s port mapping; nothing
+// gets GUI port 55001. Only used for `docker run`'s port mapping; nothing
 // in this app links to it today, it's just there so the admin can open it
 // by hand if needed.
+//
+// +5_000/+10_000 (not the +10_000/+20_000 this started as) - assignedPort
+// starts at 50001, and TCP ports top out at 65535, so +20_000 overflowed
+// that immediately (caught live: "docker: invalid containerPort: 70001").
+// These two leave room for thousands of Pis before either one would.
 function guiPortFor(assignedPort: number): number {
-  return assignedPort + 10_000;
+  return assignedPort + 5_000;
 }
 
 // fprime-gds's "threaded TCP socket server" port - the same channel its
@@ -73,7 +78,7 @@ function guiPortFor(assignedPort: number): number {
 // under /tmp inside the container, which a process outside that
 // container's mount namespace (this one) can't reach at all.
 function ttsPortFor(assignedPort: number): number {
-  return assignedPort + 20_000;
+  return assignedPort + 10_000;
 }
 
 function remoteDirFor(): string {
