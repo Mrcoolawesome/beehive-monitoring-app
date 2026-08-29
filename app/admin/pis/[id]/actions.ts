@@ -66,3 +66,49 @@ export async function deleteBoardAction(
   await prisma.board.delete({ where: { id: boardId } });
   revalidatePath(`/admin/pis/${piId}`);
 }
+
+// Both of these just flag work for scripts/deployer.ts to pick up on its
+// next poll (a few seconds away, not instant) - see the PiPendingAction
+// comment in prisma/schema.prisma for why the actual ssh/tailscale work
+// can't happen here, in the Dockerized web app itself.
+export async function requestResyncIpAction(piId: string, _formData: FormData) {
+  await requireAdmin();
+  await prisma.pi.update({
+    where: { id: piId },
+    data: {
+      pendingAction: "RESYNC_IP",
+      pendingActionRequestedAt: new Date(),
+      lastActionError: null,
+    },
+  });
+  revalidatePath(`/admin/pis/${piId}`);
+}
+
+export async function requestInitialSetupAction(
+  piId: string,
+  _formData: FormData,
+) {
+  await requireAdmin();
+  await prisma.pi.update({
+    where: { id: piId },
+    data: {
+      pendingAction: "INITIAL_SETUP",
+      pendingActionRequestedAt: new Date(),
+      lastActionError: null,
+    },
+  });
+  revalidatePath(`/admin/pis/${piId}`);
+}
+
+export async function requestRedeployAction(piId: string, _formData: FormData) {
+  await requireAdmin();
+  await prisma.pi.update({
+    where: { id: piId },
+    data: {
+      pendingAction: "REDEPLOY",
+      pendingActionRequestedAt: new Date(),
+      lastActionError: null,
+    },
+  });
+  revalidatePath(`/admin/pis/${piId}`);
+}

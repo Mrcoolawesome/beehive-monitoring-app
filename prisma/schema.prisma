@@ -70,6 +70,26 @@ enum PiStatus {
   DISABLED
 }
 
+// Work the admin panel (the Dockerized web app - no ssh/tailscale binaries
+// and no tailnet route) can request but not itself perform.
+// scripts/deployer.ts (native on devin-server's host, already needs
+// ssh/tailscale/docker for its own redeploy loop) polls for these and
+// executes them - see that file's handlePendingActions(). Deliberately
+// just one nullable field on Pi rather than a separate queue table: at
+// most one action is ever pending per Pi (the UI only offers a new action
+// once the last one cleared), so a child table wouldn't give anything
+// pendingAction/pendingActionRequestedAt don't already.
+enum PiPendingAction {
+  RESYNC_IP
+  INITIAL_SETUP
+  // Re-upload the binary/boot sequence/boards.txt and restart the service,
+  // without repeating INITIAL_SETUP's systemd-install step. deployer.ts
+  // also does this on its own for every ACTIVE Pi when beehive-project's
+  // origin/main moves - this is the manual trigger for the other case that
+  // doesn't involve a new commit: the admin changed this Pi's boards.
+  REDEPLOY
+}
+
 model Pi {
   id   String @id @default(cuid())
   name String
@@ -101,6 +121,16 @@ model Pi {
 
   lastDeployedSha  String?
   lastDeployedAt   DateTime?
+
+  // Set by an admin action (app/admin/pis/[id]/actions.ts), cleared by
+  // deployer.ts once it's handled - see the PiPendingAction comment above.
+  pendingAction            PiPendingAction?
+  pendingActionRequestedAt DateTime?
+  // Set instead of clearing pendingAction silently on failure, so the
+  // admin panel can show what went wrong rather than the action just
+  // seeming to do nothing. Cleared automatically the next time an action
+  // is requested.
+  lastActionError String?
 
   boards Board[]
 

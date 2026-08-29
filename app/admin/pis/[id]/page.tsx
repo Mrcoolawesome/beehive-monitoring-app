@@ -1,6 +1,7 @@
 import { notFound } from "next/navigation";
 import { prisma } from "@/lib/db";
 import BoardsSection from "./BoardsSection";
+import SshSetupSection from "./SshSetupSection";
 
 // Matches the fixed number of WiiBoardManager instances the flight
 // software declares (wiiBoardManager0..wiiBoardManager3) - see the "Multi-
@@ -49,11 +50,27 @@ export default async function PiDetailPage({
         </dd>
         <dt className="text-[var(--text-muted)]">Status</dt>
         <dd className="text-[var(--foreground)]">{pi.status}</dd>
+        <dt className="text-[var(--text-muted)]">Last deployed</dt>
+        <dd className="text-[var(--foreground)]">
+          {pi.lastDeployedSha
+            ? `${pi.lastDeployedSha.slice(0, 8)} (${pi.lastDeployedAt?.toLocaleString() ?? "?"})`
+            : "never"}
+        </dd>
       </dl>
-      <p className="text-xs text-[var(--text-muted)]">
-        IP resolution, SSH keypair setup, and deploy automation aren&apos;t
-        wired up yet — coming in a later phase.
-      </p>
+
+      <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-6">
+        <h2 className="mb-3 text-sm font-medium text-[var(--text-secondary)]">
+          SSH setup
+        </h2>
+        <SshSetupSection
+          piId={pi.id}
+          sshUser={pi.sshUser}
+          resolvedIp={pi.resolvedIp}
+          sshPublicKey={pi.sshPublicKey}
+          pendingAction={pi.pendingAction}
+          lastActionError={pi.lastActionError}
+        />
+      </div>
 
       <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-6">
         <h2 className="mb-3 text-sm font-medium text-[var(--text-secondary)]">

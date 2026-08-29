@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "watch": "tsx scripts/watcher.ts",
+    "deploy": "tsx scripts/deployer.ts",
     "create-admin": "tsx scripts/create-admin.ts",
     "db:migrate": "prisma migrate dev",
     "db:studio": "prisma studio"

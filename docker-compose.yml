@@ -29,6 +29,16 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-beehive_app}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: ${POSTGRES_DB:-beehive}
+    ports:
+      # Loopback-only, not exposed to the network - lets scripts/deployer.ts
+      # (native on the host, not in Docker - see that file's top comment for
+      # why) reach this same Postgres via a normal DATABASE_URL pointing at
+      # localhost, the same way `web`/`watcher` reach it over the internal
+      # Docker network. Nothing before this needed host-Postgres access at
+      # all - `watcher` has only ever run as a container here (see its own
+      # service below) - so this is genuinely new surface, not an existing
+      # gap, and kept to loopback specifically so it isn't one either.
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
       # Named volume, not a bind mount — Postgres's data directory doesn't
       # need to be human-browsable on the host, and this avoids UID

@@ -21,9 +21,10 @@ doc and the decisions made while implementing it.
   (`tailscaleName`) resolves to `resolvedIp`, and it gets a unique
   `assignedPort` at registration — every Pi gets its own dedicated GDS/
   decoder pipeline on that port rather than sharing one, so a downlinked
-  reading is always unambiguously "from this Pi." (SSH keypair storage and
-  the resolve/deploy automation those fields are for aren't wired up yet —
-  see `docs/planning.md`'s later phases.)
+  reading is always unambiguously "from this Pi." SSH keypair
+  generation/storage and the resolve/deploy automation those fields are for
+  are handled by `scripts/deployer.ts` — see "Fleet management: registering
+  and deploying to a Pi" below.
 - **Board** — one Wii Balance Board wired to a specific `Pi`, identified by
   Bluetooth MAC and a `slotIndex` (0–3, matching which `WiiBoardManager`
   instance the flight software deploys it to — see the beehive-project
@@ -224,6 +225,77 @@ User=devins
 WantedBy=multi-user.target
 ```
 
+## Fleet management: registering and deploying to a Pi
+
+Adding a Pi to the fleet and getting the flight binary running on it is
+driven from `/admin/pis`, but the actual ssh/tailscale/docker work happens
+in **`scripts/deployer.ts`**, a separate long-running process — the admin
+panel itself runs inside the `web` Docker container, which deliberately
+has none of those tools or a route onto the tailnet. The admin panel and
+the deployer talk to each other only through the database: an admin action
+sets `Pi.pendingAction`, and the deployer polls for that and clears it once
+handled (see `PiPendingAction` in `prisma/schema.prisma`).
+
+1. **Set the GDS server address once**, in `/admin/server` — this is what
+   gets baked into every Pi's systemd `ExecStart` as `-a <host>` (see
+   `../beehive-project/README.md` section 8).
+2. **Register a Pi** in `/admin/pis`: a name, its Tailscale MagicDNS name
+   (e.g. `beehive0` — not a raw IP, see the `Pi.tailscaleName` comment in
+   `prisma/schema.prisma`), and which user it belongs to. This assigns the
+   next free port and creates the row as `PENDING_SETUP`.
+3. **Wait a few seconds, then open the Pi's detail page.** The deployer
+   generates an SSH keypair for every Pi that doesn't have one yet
+   (`ensureKeypairs()` in `scripts/deployer.ts`) on its own poll cycle —
+   once that's happened, the page shows the public key and a
+   copy-pasteable one-liner to install it on the Pi (the one manual,
+   physical step — same action as a normal `ssh-copy-id`, just against a
+   key the app generated instead of your own).
+4. **Add board(s)** for the Pi (Bluetooth MAC, label, slot 0–3) if you
+   haven't already.
+5. Once the public key is installed on the Pi, click **"Run initial
+   setup."** This queues `INITIAL_SETUP`; the deployer resolves the Pi's
+   IP if needed, uploads the `aarch64-linux` binary + `boot_dp_downlink.bin`
+   + a generated `boards.txt` (from step 4's boards), then runs
+   `../beehive-project/tools/install_beedeployment_service.sh` on the Pi
+   over SSH to install and start its systemd service. On success the Pi
+   becomes `ACTIVE`.
+6. From here on, **the deployer keeps it up to date on its own**: every
+   `SLOW_POLL_MS` (5 min) it checks whether `beehive-project`'s
+   `origin/main` has moved, rebuilds (`fprime-util build aarch64-linux`) if
+   so, and re-deploys the new binary to every `ACTIVE` Pi whose
+   `lastDeployedSha` is behind. Changed a Pi's boards without a new commit?
+   Click **"Redeploy now"** on its detail page instead of waiting.
+7. **"Resync IP"** re-runs `tailscale ip -4 <tailscaleName>` and updates
+   `resolvedIp` — the escape hatch for the (uncommon) case where a Pi's
+   underlying Tailscale IP drifts. Every deploy/SSH operation always uses
+   the last-resolved `resolvedIp`, never the name directly, so a stale IP
+   is a visible, fixable state (surfaced via `Pi.lastActionError`) rather
+   than a silent connection failure.
+
+The deployer also creates a **separate Docker container pair per `ACTIVE`
+Pi** — `beehive-gds-<piId>` and `beehive-decoder-<piId>`, both from the
+`beehive-gds:latest` image `../beehive-project/docker-compose.yml` already
+builds — rather than one shared GDS multiple Pis would have to connect
+into (`reconcileDockerContainers()`). Each Pi's GDS listens on its own
+`assignedPort` (comm link) and `assignedPort + 10000` (web GUI), with its
+own `../beehive-project/DpCat/<piId>/` and `logs/<piId>/` on disk so
+multiple Pis' data products and logs never collide. A Pi that's `DISABLED`
+has its containers torn down on the next reconcile pass.
+
+Run the deployer with `pnpm deploy`, or install it as a persistent service
+with [`tools/install_deployer_service.sh`](tools/install_deployer_service.sh)
+(mirrors `../beehive-project/tools/install_watch_dpcat_decode_service.sh`'s
+per-user systemd pattern). It needs `ssh-keygen`, `tailscale`, `docker`,
+`git`, and `fprime-util` (from `beehive-project`'s own venv) all on
+`PATH`/on disk, plus its own dedicated `beehive-project` checkout (see
+`BEEHIVE_PROJECT_DIR` in `.env.example` — the deployer fast-forwards and
+rebuilds this checkout on its own schedule, so don't point it at one you
+also develop in by hand) and a reachable Postgres — if the rest of the
+stack runs via `docker compose`, that means the `db` service's
+loopback-only published port (see its `ports:` entry in
+`docker-compose.yml`) rather than the internal Docker network `web`/
+`watcher` use, since the deployer runs natively on the host.
+
 ## Mobile & installing as an app
 
 The dashboard is responsive (usable one-handed on a phone) and is a PWA — on
@@ -262,7 +334,13 @@ TLS in front of `pnpm start` is the usual fix.
   calls, independent of middleware.ts's route-level gate
 - `scripts/watcher.ts` — the standalone ingestion process (`pnpm watch`),
   one instance per Pi (`PI_ID`)
+- `scripts/deployer.ts` — the fleet deployer (`pnpm deploy`) — SSH keypair
+  generation, resolving/deploying to Pis, auto-redeploy on new commits, and
+  per-Pi GDS/decoder Docker containers; see "Fleet management" above
 - `scripts/create-admin.ts` — bootstraps the first admin account
+- `lib/crypto.ts` — AES-256-GCM encrypt/decrypt for `Pi.sshPrivateKeyEncrypted`
+- `tools/install_deployer_service.sh` — installs `scripts/deployer.ts` as a
+  persistent per-user systemd service
 - `app/api/readings/route.ts` — GET endpoint, readings for a `?boardId=`
   (defaults to the signed-in user's first board), scoped to boards they
   can see
@@ -278,9 +356,8 @@ TLS in front of `pnpm start` is the usual fix.
 
 ## Future
 
-Deploy automation (SSH keypair setup, resolving a Pi's IP from its
-Tailscale name, auto-redeploying the flight binary on a new commit) and
-multi-board ingestion (this repo's watcher only handles one board per Pi
-today — see `scripts/watcher.ts`'s `resolveBoard()`) aren't wired up yet.
-See `docs/planning.md` and the "Multi-Pi / multi-board fleet management"
-plan for what's next.
+Multi-board ingestion — this repo's watcher only handles one board per Pi
+today, since the decoded telemetry JSON doesn't yet carry which
+`WiiBoardManager` instance a reading came from (see `scripts/watcher.ts`'s
+`resolveBoard()`) — isn't wired up yet. See `docs/planning.md` and the
+"Multi-Pi / multi-board fleet management" plan for more.
