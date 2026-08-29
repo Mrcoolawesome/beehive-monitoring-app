@@ -40,10 +40,99 @@ model User {
 
   // Only an ADMIN can reach /admin (manage Pis/boards/SSH credentials).
   // Everyone else is a read-only VIEWER, scoped to Pis assigned to them
-  // (Pi.userId) - see Pi model, added in a later migration.
+  // (Pi.userId).
   role UserRole @default(VIEWER)
 
+  // A VIEWER only ever sees these Pis (and their boards/readings) on the
+  // dashboard - see app/page.tsx. Cascading delete: if a user account is
+  // removed, their Pis go with it rather than becoming orphaned rows an
+  // admin has to notice and clean up by hand. (Deleting a Pi this way does
+  // NOT stop the flight software or decommission hardware - it just drops
+  // this app's record of it. The admin panel's own Pi deletion should warn
+  // about that separately.)
+  pis Pi[]
+
   createdAt DateTime @default(now())
+}
+
+// A Raspberry Pi in the fleet. One dedicated GDS/decoder instance per Pi
+// (on `assignedPort`) rather than a shared GDS multiple Pis connect to -
+// see the "Multi-Pi / multi-board fleet management" plan for why (avoids
+// needing new flight-software protocol work or depending on fprime-gds
+// behavior with multiple simultaneous flight-software clients, which isn't
+// a scenario it's designed for).
+enum PiStatus {
+  // Row exists (port assigned, SSH keypair generated) but the one-time
+  // physical bootstrap step (installing the generated public key on the
+  // Pi) and initial deploy haven't happened yet.
+  PENDING_SETUP
+  ACTIVE
+  DISABLED
+}
+
+model Pi {
+  id   String @id @default(cuid())
+  name String
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // The Tailscale MagicDNS hostname (e.g. "beehive0") - what the admin
+  // actually enters, not a raw IP: names are what's stable/human-readable,
+  // the underlying IP is what SSH/scp/deploy operations actually need and
+  // can (rarely) drift. `tailscale ip -4 <name>`, run on devin-server's
+  // host (on the tailnet already), resolves it into resolvedIp - both at
+  // registration and via the admin panel's "Resync IP" action.
+  tailscaleName String
+  resolvedIp    String?
+  ipResolvedAt  DateTime?
+
+  sshUser                String  @default("pi")
+  sshPublicKey           String?
+  // AES-256-GCM encrypted, never the raw key - see lib/crypto.ts.
+  sshPrivateKeyEncrypted String?
+
+  // Unique so two Pis can never collide on the same dedicated GDS/decoder
+  // instance - assigned once at registration (see admin Pi-creation
+  // action), starting from 50001.
+  assignedPort Int @unique
+
+  status PiStatus @default(PENDING_SETUP)
+
+  lastDeployedSha  String?
+  lastDeployedAt   DateTime?
+
+  boards Board[]
+
+  createdAt DateTime @default(now())
+}
+
+// A Wii Balance Board paired to a specific Pi. Up to 4 per Pi, matching the
+// fixed number of WiiBoardManager instances the flight software declares
+// (wiiBoardManager0..wiiBoardManager3) - F' namespaces telemetry/events by
+// instance name automatically, so slotIndex is what ties a Board row to
+// which instance's data is actually its readings.
+model Board {
+  id   String @id @default(cuid())
+  piId String
+  pi   Pi     @relation(fields: [piId], references: [id], onDelete: Cascade)
+
+  bluetoothMac String
+  // Admin-friendly label (e.g. "Hive 3 board") - shown in the UI instead
+  // of a bare MAC address.
+  label String
+
+  // Which WiiBoardManager instance (0..3) this board is deployed to.
+  slotIndex Int
+
+  readings WeightReading[]
+
+  createdAt DateTime @default(now())
+
+  // A Pi can't have the same board wired into two slots, or two different
+  // boards claiming the same slot.
+  @@unique([piId, slotIndex])
+  @@unique([piId, bluetoothMac])
 }
 
 // One row per ingested F' weight session (see lib/ingest.ts for how a raw
@@ -59,23 +148,35 @@ model WeightReading {
   // zero/near-zero sensor-noise samples (see MIN_VALID_WEIGHT_KG).
   averageWeight Float
 
-  // Identifies which Raspberry Pi / hive this reading came from. Only one
-  // Pi exists today so every row currently shares one hardcoded value (see
-  // PI_MAC_ADDRESS in .env), but this field is here so multiple hives can
-  // be supported later without a schema change.
-  piMacAddress String
+  // A reading is fundamentally from a specific board (a board belongs to
+  // exactly one Pi) - replaces the old flat piMacAddress string field.
+  boardId String
+  board   Board  @relation(fields: [boardId], references: [id], onDelete: Cascade)
 
   // When this row was written to the database (distinct from `timestamp`,
   // which is when the sensor reading actually happened).
   createdAt DateTime @default(now())
 
-  // Two genuine readings from the same Pi can never share a timestamp (F's
-  // header timestamp is microsecond-precision and each session is ~a minute
-  // apart), so this doubles as a de-dup guard: if the same source file ever
-  // gets decoded and ingested more than once — e.g. a decoder or watcher
-  // restart re-processing something it already handled — upsert-ing on this
-  // key makes that a no-op update instead of a duplicate row. See
-  // scripts/watcher.ts's use of `upsert` and docs/planning.md's Decisions
-  // section for the deployment issue that surfaced the need for this.
-  @@unique([piMacAddress, timestamp])
+  // Two genuine readings from the same board can never share a timestamp
+  // (F's header timestamp is microsecond-precision and each session is ~a
+  // minute apart), so this doubles as a de-dup guard: if the same source
+  // file ever gets decoded and ingested more than once — e.g. a decoder or
+  // watcher restart re-processing something it already handled — upsert-
+  // ing on this key makes that a no-op update instead of a duplicate row.
+  // See scripts/watcher.ts's use of `upsert` and docs/planning.md's
+  // Decisions section for the deployment issue that surfaced the need for
+  // this.
+  @@unique([boardId, timestamp])
+}
+
+// Where the flight software on every Pi connects to (`-a <host>`, baked
+// into each Pi's systemd service at deploy time) - a single row, enforced
+// by app logic (see app/admin/server/actions.ts) rather than a DB
+// constraint, since Postgres has no clean native "at most one row"
+// constraint short of a partial unique index on a constant.
+model ServerConfig {
+  id   String @id @default(cuid())
+  host String
+
+  updatedAt DateTime @updatedAt
 }

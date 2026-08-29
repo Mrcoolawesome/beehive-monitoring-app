@@ -6,11 +6,38 @@ framework. F´ downlinks weight sessions as JSON files; this app watches a
 directory for those files, averages each session's samples, stores the result
 in Postgres, and charts it over time.
 
-Stack: Next.js (App Router) + TypeScript + Tailwind + Prisma + PostgreSQL.
-No auth/accounts — this is a single-user local app.
+Stack: Next.js (App Router) + TypeScript + Tailwind + Prisma + PostgreSQL +
+Auth.js. Real accounts: an **admin** registers Pis/boards and assigns each
+Pi to a user in `/admin`; everyone else is a read-only **viewer**, seeing
+only the Pi(s)/board(s) assigned to them on the main dashboard (`/`).
 
 See [`docs/planning.md`](docs/planning.md) for the original project planning
 doc and the decisions made while implementing it.
+
+## Data model
+
+- **User** — email/password (bcrypt-hashed), `role` of `ADMIN` or `VIEWER`.
+- **Pi** — one Raspberry Pi, owned by a `User`. Its Tailscale MagicDNS name
+  (`tailscaleName`) resolves to `resolvedIp`, and it gets a unique
+  `assignedPort` at registration — every Pi gets its own dedicated GDS/
+  decoder pipeline on that port rather than sharing one, so a downlinked
+  reading is always unambiguously "from this Pi." (SSH keypair storage and
+  the resolve/deploy automation those fields are for aren't wired up yet —
+  see `docs/planning.md`'s later phases.)
+- **Board** — one Wii Balance Board wired to a specific `Pi`, identified by
+  Bluetooth MAC and a `slotIndex` (0–3, matching which `WiiBoardManager`
+  instance the flight software deploys it to — see the beehive-project
+  repo). Up to 4 boards per Pi.
+- **WeightReading** — one averaged session, belonging to exactly one
+  `Board`.
+
+`scripts/create-admin.ts` bootstraps the very first admin account (there's
+no self-serve path to `ADMIN` — every other account starts as `VIEWER`,
+promoted only by direct DB access today):
+
+```bash
+pnpm create-admin you@example.com 'a real password'
+```
 
 ## How data flows
 
@@ -24,19 +51,22 @@ The full pipeline spans two repos — this one, and the sibling
 2. `../beehive-project/tools/watch_dpcat_decode.py` decodes each `.fdp` into
    a sibling `.json` file in that same directory — this repo's watcher never
    sees `.fdp` files directly, only the decoded JSON.
-3. `scripts/watcher.ts` (this repo) watches `WATCH_DIR` for those new
-   `*.json` files.
+3. `scripts/watcher.ts` (this repo, one process per Pi — see `PI_ID` below)
+   watches `WATCH_DIR` for those new `*.json` files.
 4. Each file is parsed (`lib/ingest.ts`), samples at or below
    `MIN_VALID_WEIGHT_KG` (0.1 kg) are dropped as tare/warm-up noise, and the
    remaining samples are averaged.
-5. The average, timestamp, and `PI_MAC_ADDRESS` are written to the
+5. The average, timestamp, and the resolved `Board` (see `PI_ID` below —
+   today this only works cleanly with exactly one board per Pi; see
+   `scripts/watcher.ts`'s `resolveBoard()`) are written to the
    `WeightReading` table.
 6. The file is moved to `WATCH_DIR/processed/` on success or
    `WATCH_DIR/failed/` if parsing/validation fails (e.g. every sample was
    noise — this happened for several bench-test captures in the real F´
    sample data, where the board was empty).
-7. The dashboard (`/`) reads readings for `PI_MAC_ADDRESS` from Postgres and
-   polls `/api/readings` every 30s to stay current.
+7. The dashboard (`/`) reads readings for whichever board(s) are assigned
+   to the signed-in user and polls `/api/readings` every 30s to stay
+   current.
 
 ## Running with Docker (recommended for a server)
 
@@ -60,6 +90,9 @@ reused by three services — `db` doesn't count, that's stock Postgres:
 **Requires `../beehive-project` to exist as a sibling directory** (i.e. this
 repo and that one checked out next to each other, same as for local dev) —
 `include:` resolves that path relative to this repo's `docker-compose.yml`.
+The `beehive-stack` umbrella repo (both repos as git submodules) gives you
+exactly this layout for free — see its README — but isn't required; a
+plain sibling checkout of the two repos works the same way.
 
 **If you previously set up `beehive-project`'s systemd decoder service**
 (`beehive-dpcat-decode.service`), stop and disable it before running the
@@ -80,18 +113,22 @@ systemctl --user disable --now beehive-dpcat-decode.service
      same directory `gds`/`decoder` write to — so this repo's watcher
      actually sees what F´ produces. Bind-mounted into the watcher
      container; see `docker-compose.yml` for exactly how.
-   - `PI_MAC_ADDRESS` — same meaning as in local dev (see below).
+   - `PI_ID` — which registered Pi (see Data model above) this watcher
+     instance ingests readings for. Register the Pi and give it exactly one
+     board in `/admin` first — the watcher fails fast at startup otherwise.
+   - `AUTH_SECRET` — signs/encrypts session tokens. Generate one with
+     `openssl rand -base64 32`.
    - `WATCH_UID` / `WATCH_GID` — optional, only needed if your host user's
      `id -u`/`id -g` isn't 1000/1000 (the common default). The watcher
      container writes into `WATCH_DIR` as this user so the files it moves
      around stay owned by you, not root.
 
 2. On the host (not in a container — this needs the actual F´ build
-   toolchain), build the ARM deployment GDS reads its dictionary from, if
-   you haven't already:
+   toolchain), build the deployment GDS reads its dictionary from, if you
+   haven't already:
 
    ```bash
-   cd ../beehive-project && fprime-util build arm-hf-linux
+   cd ../beehive-project && fprime-util build aarch64-linux
    ```
 
 3. Build and start everything:
@@ -142,15 +179,20 @@ rebuilds the image and recreates whatever changed.
    - `WATCH_DIR` — the directory F´ (or a script relaying its downlinks) drops
      session JSON files into. Defaults to `./data/incoming`, created
      automatically on first run.
-   - `PI_MAC_ADDRESS` — identifies this hive's Pi. Only one Pi exists today,
-     so this is a single hardcoded value rather than a per-file field (the F´
-     payload doesn't carry a MAC address). Revisit this once there are
-     multiple hives.
+   - `AUTH_SECRET` — generate with `openssl rand -base64 32`.
+   - `PI_ID` — only needed to run `pnpm watch`; see Data model above for how
+     to register a Pi first.
 
 4. Apply the database schema:
 
    ```bash
    pnpm db:migrate
+   ```
+
+5. Create the first admin account (see Data model above):
+
+   ```bash
+   pnpm create-admin you@example.com 'a real password'
    ```
 
 ### Running
@@ -213,17 +255,32 @@ TLS in front of `pnpm start` is the usual fix.
 - `lib/ingest.ts` — parses and validates F´ JSON, computes the filtered average
 - `lib/db.ts` — Prisma client (Prisma 7 requires an explicit driver adapter;
   see `@prisma/adapter-pg` usage there)
-- `scripts/watcher.ts` — the standalone ingestion process (`pnpm watch`)
-- `app/api/readings/route.ts` — GET endpoint, readings for a `?mac=` (defaults
-  to `PI_MAC_ADDRESS`)
+- `lib/auth.ts` / `auth.config.ts` / `middleware.ts` — Auth.js config, split
+  into a Node-only part (Prisma-backed Credentials provider) and an Edge-
+  safe part middleware.ts can use — see `auth.config.ts`'s header for why
+- `lib/require-admin.ts` — authorization check every admin Server Action
+  calls, independent of middleware.ts's route-level gate
+- `scripts/watcher.ts` — the standalone ingestion process (`pnpm watch`),
+  one instance per Pi (`PI_ID`)
+- `scripts/create-admin.ts` — bootstraps the first admin account
+- `app/api/readings/route.ts` — GET endpoint, readings for a `?boardId=`
+  (defaults to the signed-in user's first board), scoped to boards they
+  can see
 - `app/components/Dashboard.tsx` / `WeightChart.tsx` — the dashboard UI
   (responsive; see the `sm:` breakpoints throughout for the mobile-vs-desktop
   differences)
+- `app/admin/` — Server/Pi/board management, admin-only (see Data model
+  above)
 - `app/manifest.ts` / `public/sw.js` / `app/components/ServiceWorkerRegistration.tsx`
   — the PWA install manifest, service worker, and its client-side registration
-- `prisma/schema.prisma` — the `WeightReading` model
+- `prisma/schema.prisma` — `User`, `Pi`, `Board`, `WeightReading`,
+  `ServerConfig`
 
 ## Future
 
-The F´ project itself lives in `../beehive-project`; the plan is to bring it
-in as a git submodule of this repo once the monitoring app has stabilized.
+Deploy automation (SSH keypair setup, resolving a Pi's IP from its
+Tailscale name, auto-redeploying the flight binary on a new commit) and
+multi-board ingestion (this repo's watcher only handles one board per Pi
+today — see `scripts/watcher.ts`'s `resolveBoard()`) aren't wired up yet.
+See `docs/planning.md` and the "Multi-Pi / multi-board fleet management"
+plan for what's next.

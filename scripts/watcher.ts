@@ -1,6 +1,7 @@
 // The ingestion watcher: a standalone, long-running process (run via
 // `pnpm watch`) that watches WATCH_DIR for new F' telemetry JSON files and
-// turns each one into a WeightReading row in Postgres.
+// turns each one into a WeightReading row in Postgres, attributed to one
+// specific Board (see PI_ID below).
 //
 // This runs separately from the Next.js web server on purpose — Next.js
 // handles one HTTP request at a time and isn't meant to host a background
@@ -18,13 +19,18 @@ import { InvalidTelemetryError, parseTelemetryFile } from "../lib/ingest";
 // dotenv/config (imported above) loads .env for us, since this script runs
 // standalone via tsx rather than through Next.js (which loads .env itself).
 const WATCH_DIR = process.env.WATCH_DIR;
-const PI_MAC_ADDRESS = process.env.PI_MAC_ADDRESS;
+// Identifies which Pi row (see prisma/schema.prisma's Pi model) this
+// watcher instance is ingesting readings for - one watcher process per Pi,
+// matching one dedicated GDS/decoder pipeline per Pi (see the admin panel /
+// the deployer service). Not a Board id directly: see resolveBoard() below
+// for why.
+const PI_ID = process.env.PI_ID;
 
 if (!WATCH_DIR) {
   throw new Error("WATCH_DIR is not set (check your .env file)");
 }
-if (!PI_MAC_ADDRESS) {
-  throw new Error("PI_MAC_ADDRESS is not set (check your .env file)");
+if (!PI_ID) {
+  throw new Error("PI_ID is not set (check your .env file)");
 }
 
 // Every ingested file ends up in one of these two subfolders of WATCH_DIR,
@@ -45,11 +51,37 @@ async function ensureDirs() {
   }
 }
 
+// Resolves which Board this watcher's readings belong to. Only handles the
+// single-board-per-Pi case for now: the decoded JSON telemetry doesn't yet
+// carry anything identifying which WiiBoardManager instance (i.e. which
+// slotIndex/Board) a reading came from - that needs the flight-software
+// multi-board work (see the "Multi-Pi / multi-board fleet management"
+// plan's F' phase, which will namespace telemetry per instance) before this
+// watcher can disambiguate multiple boards on the same Pi. Resolved once at
+// startup rather than per-file since it can't change while this process is
+// running (adding/removing boards for a Pi requires restarting its watcher
+// anyway, same as today's WATCH_DIR/PI_ID env vars).
+async function resolveBoard() {
+  const boards = await prisma.board.findMany({ where: { piId: PI_ID! } });
+
+  if (boards.length === 0) {
+    throw new Error(
+      `Pi ${PI_ID} has no boards configured - add one in the admin panel before starting this watcher.`,
+    );
+  }
+  if (boards.length > 1) {
+    throw new Error(
+      `Pi ${PI_ID} has ${boards.length} boards configured, but this watcher can't yet tell which board a decoded reading came from - that needs the flight-software multi-board work first. Remove all but one board to run it for now.`,
+    );
+  }
+  return boards[0];
+}
+
 // Handles exactly one telemetry file: parse it, write a WeightReading row if
 // it's valid, then move the file out of WATCH_DIR so it's never reprocessed.
 // Both the success and failure paths end with the file being moved — the
 // only difference is which folder it lands in.
-async function handleFile(filePath: string) {
+async function handleFile(filePath: string, boardId: string) {
   const fileName = path.basename(filePath);
   try {
     const session = await parseTelemetryFile(filePath);
@@ -57,21 +89,21 @@ async function handleFile(filePath: string) {
     // handed to this watcher more than once — e.g. a decoder upstream
     // (like beehive-project's tools/watch_dpcat_decode.py) redecoding a
     // .fdp it's already decoded, after something else moved its .json
-    // output away. Same Pi + same timestamp is always the same reading
+    // output away. Same board + same timestamp is always the same reading
     // (F's header timestamp is microsecond-precision, one per session), so
     // re-ingesting it just overwrites the same row instead of creating a
     // duplicate one.
     await prisma.weightReading.upsert({
       where: {
-        piMacAddress_timestamp: {
-          piMacAddress: PI_MAC_ADDRESS!,
+        boardId_timestamp: {
+          boardId,
           timestamp: session.timestamp,
         },
       },
       create: {
         timestamp: session.timestamp,
         averageWeight: session.averageWeightKg,
-        piMacAddress: PI_MAC_ADDRESS!,
+        boardId,
       },
       update: {
         averageWeight: session.averageWeightKg,
@@ -105,9 +137,12 @@ async function handleFile(filePath: string) {
 
 async function main() {
   await ensureDirs();
+  const board = await resolveBoard();
 
   console.log(`Watching ${WATCH_DIR} for F' telemetry JSON files...`);
-  console.log(`Tagging readings with piMacAddress=${PI_MAC_ADDRESS}`);
+  console.log(
+    `Tagging readings with boardId=${board.id} (${board.label}, Pi ${PI_ID})`,
+  );
 
   const watcher = chokidar.watch(".", {
     // Watch WATCH_DIR's contents ("." relative to cwd) rather than passing
@@ -145,7 +180,7 @@ async function main() {
     // event handler isn't async-aware, and awaiting would process files
     // strictly one at a time. `void` just tells TypeScript we're
     // intentionally not awaiting this promise.
-    void handleFile(path.join(WATCH_DIR!, relativePath));
+    void handleFile(path.join(WATCH_DIR!, relativePath), board.id);
   });
 
   watcher.on("error", (err) => {

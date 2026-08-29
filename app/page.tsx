@@ -2,8 +2,10 @@
 // runs on the server and can query the database directly — no API round
 // trip needed for the very first render. The <Dashboard> client component
 // then takes over for anything that needs to update live in the browser
-// (the 30s polling, the chart/table toggle).
+// (the 30s polling, the chart/table toggle, the board switcher).
 
+import { redirect } from "next/navigation";
+import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import Dashboard from "./components/Dashboard";
 
@@ -13,17 +15,28 @@ import Dashboard from "./components/Dashboard";
 export const dynamic = "force-dynamic";
 
 export default async function Home() {
-  const mac = process.env.PI_MAC_ADDRESS ?? "";
+  const session = await auth();
+  if (!session?.user) {
+    redirect("/login");
+  }
+
+  // Every board across every Pi assigned to this user (Pi.userId) - a
+  // VIEWER only ever sees their own boards here, never anyone else's; an
+  // ADMIN sees the same thing on this page too (their own assigned Pis,
+  // if any) - seeing every Pi in the fleet is what the separate /admin
+  // section is for, not this page.
+  const boards = await prisma.board.findMany({
+    where: { pi: { userId: session.user.id } },
+    include: { pi: { select: { name: true } } },
+    orderBy: { createdAt: "asc" },
+  });
+
+  const defaultBoard = boards[0];
 
   type ReadingRow = { id: string; timestamp: Date; averageWeight: number };
-
-  // Only query if PI_MAC_ADDRESS is actually configured — an empty string
-  // as a `where` filter would technically run, but "show nothing because
-  // nothing matches an empty MAC" is more confusing than "show nothing
-  // because we skipped the query," so we short-circuit instead.
-  const readings: ReadingRow[] = mac
+  const readings: ReadingRow[] = defaultBoard
     ? await prisma.weightReading.findMany({
-        where: { piMacAddress: mac },
+        where: { boardId: defaultBoard.id },
         orderBy: { timestamp: "asc" },
         select: { id: true, timestamp: true, averageWeight: true },
       })
@@ -31,7 +44,12 @@ export default async function Home() {
 
   return (
     <Dashboard
-      mac={mac}
+      boards={boards.map((b) => ({
+        id: b.id,
+        label: b.label,
+        piName: b.pi.name,
+      }))}
+      initialBoardId={defaultBoard?.id ?? null}
       // Server Components can pass plain serializable data to Client
       // Components, but not JS objects like Date — so timestamps get
       // converted to ISO strings here and parsed back into Dates in the

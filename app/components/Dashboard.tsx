@@ -1,12 +1,12 @@
 // The main dashboard view: a "latest weight" stat tile plus a weight-over-
 // time chart (with a table view as an alternative). This is a Client
 // Component ("use client") because it needs browser-only features — state
-// for the chart/table toggle, and a polling interval that keeps the data
-// fresh without the user having to refresh the page.
+// for the chart/table toggle, the board switcher, and a polling interval
+// that keeps the data fresh without the user having to refresh the page.
 
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import WeightChart, { type WeightDomain } from "./WeightChart";
 
 // The shape of one row as it travels from the server (app/page.tsx) or the
@@ -15,6 +15,14 @@ export interface Reading {
   id: string;
   timestamp: string; // ISO string — see the comment in app/page.tsx for why
   averageWeight: number;
+}
+
+// One board this signed-in user can view — every Pi assigned to them
+// (Pi.userId), across all of that Pi's boards. See app/page.tsx.
+export interface BoardOption {
+  id: string;
+  label: string;
+  piName: string;
 }
 
 // How often to re-fetch readings from the API while the page is open. F'
@@ -105,15 +113,22 @@ function formatRelative(iso: string) {
 }
 
 export default function Dashboard({
-  mac,
+  boards,
+  initialBoardId,
   initialReadings,
 }: {
-  mac: string;
+  boards: BoardOption[];
+  initialBoardId: string | null;
   initialReadings: Reading[];
 }) {
+  // Which board's readings are currently shown. Only meaningful when there's
+  // more than one board to choose from - see the selector in the header
+  // below, which only renders in that case.
+  const [selectedBoardId, setSelectedBoardId] = useState(initialBoardId);
+
   // Seeded from the server-rendered data (app/page.tsx) so the page shows
   // real data immediately on load, then kept fresh by the polling effect
-  // below.
+  // below (and replaced outright on a board switch).
   const [readings, setReadings] = useState(initialReadings);
   const [showTable, setShowTable] = useState(false);
 
@@ -176,27 +191,47 @@ export default function Dashboard({
   ];
   const hasWeightRange = minWeight !== "" || maxWeight !== "";
 
+  // Fetches readings for one board. Shared by the polling effect below and
+  // the board-switcher's onChange, rather than each keeping its own copy of
+  // this fetch logic.
+  const fetchReadings = useCallback(async (boardId: string) => {
+    try {
+      const res = await fetch(
+        `/api/readings?boardId=${encodeURIComponent(boardId)}`,
+      );
+      if (!res.ok) return;
+      const body = await res.json();
+      setReadings(body.readings);
+    } catch {
+      // A transient network hiccup shouldn't blank out the chart — just
+      // keep showing the last successful render and try again next tick.
+    }
+  }, []);
+
   // Re-fetches readings from /api/readings every POLL_INTERVAL_MS so new
   // sessions the watcher ingests show up without a manual page refresh.
+  // Skipped entirely when there's no board selected (an account with no
+  // boards assigned yet never had anything to poll for in the first place).
   useEffect(() => {
-    const poll = async () => {
-      try {
-        const res = await fetch(`/api/readings?mac=${encodeURIComponent(mac)}`);
-        if (!res.ok) return;
-        const body = await res.json();
-        setReadings(body.readings);
-      } catch {
-        // A transient network hiccup shouldn't blank out the chart — just
-        // keep showing the last successful render and try again next tick.
-      }
-    };
-    const interval = setInterval(poll, POLL_INTERVAL_MS);
+    if (!selectedBoardId) return;
+    const interval = setInterval(
+      () => fetchReadings(selectedBoardId),
+      POLL_INTERVAL_MS,
+    );
     return () => clearInterval(interval);
-  }, [mac]);
+  }, [selectedBoardId, fetchReadings]);
+
+  function handleBoardChange(boardId: string) {
+    setSelectedBoardId(boardId);
+    // Switching boards should feel instant, not wait for the next poll
+    // tick (up to 30s away) to show the new board's data.
+    void fetchReadings(boardId);
+  }
 
   // Readings come back sorted oldest-first (see the API route), so the
   // most recent one is simply the last element.
   const latest = readings[readings.length - 1];
+  const selectedBoard = boards.find((b) => b.id === selectedBoardId);
 
   return (
     // Padding shrinks on narrow screens (the `sm:` variants only kick in at
@@ -208,230 +243,265 @@ export default function Dashboard({
         <h1 className="text-xl font-semibold text-[var(--foreground)] sm:text-2xl">
           Hive Weight Monitor
         </h1>
-        <p className="text-sm text-[var(--text-muted)]">
-          Pi {mac}
-        </p>
+        {boards.length > 1 ? (
+          // A picker instead of static text once there's more than one
+          // board to choose from - single-board accounts (the common case
+          // today) keep the simpler plain-text line below instead.
+          <label className="flex items-center gap-2 text-sm text-[var(--text-muted)]">
+            Board
+            <select
+              value={selectedBoardId ?? ""}
+              onChange={(e) => handleBoardChange(e.target.value)}
+              className="rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 py-1 text-[var(--foreground)]"
+            >
+              {boards.map((b) => (
+                <option key={b.id} value={b.id}>
+                  {b.piName} — {b.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : selectedBoard ? (
+          <p className="text-sm text-[var(--text-muted)]">
+            {selectedBoard.piName} — {selectedBoard.label}
+          </p>
+        ) : null}
       </header>
 
-      {/* Stat tile: the single most important number on the page. */}
-      <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-6">
-        <div className="text-sm text-[var(--text-secondary)]">
-          Latest weight
+      {boards.length === 0 ? (
+        // No Pi/board is assigned to this account yet - nothing to chart,
+        // table, or poll for, so the rest of the dashboard (which all
+        // assumes a selected board) never renders.
+        <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4 text-sm text-[var(--text-muted)] sm:p-6">
+          No hive is assigned to your account yet. An admin needs to add one
+          for you in the admin panel.
         </div>
-        {latest ? (
-          <>
-            {/* text-4xl rather than 5xl below ~640px keeps "61.70 kg" from
-                crowding the card's padding on the narrowest phone screens
-                (~320px wide). */}
-            <div className="mt-1 text-4xl font-semibold tabular-nums text-[var(--foreground)] sm:text-5xl">
-              {latest.averageWeight.toFixed(2)}
-              <span className="ml-2 text-xl text-[var(--text-muted)] sm:text-2xl">
-                kg
-              </span>
+      ) : (
+        <>
+          {/* Stat tile: the single most important number on the page. */}
+          <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-6">
+            <div className="text-sm text-[var(--text-secondary)]">
+              Latest weight
             </div>
-            <div className="mt-2 text-sm text-[var(--text-muted)]">
-              {formatDateTime(latest.timestamp)} &middot;{" "}
-              {formatRelative(latest.timestamp)}
-            </div>
-          </>
-        ) : (
-          // Shown before the watcher has ever successfully ingested a file
-          // for this Pi — e.g. right after a fresh setup.
-          <div className="mt-1 text-lg text-[var(--text-muted)]">
-            No readings yet — waiting on the watcher to ingest a session.
-          </div>
-        )}
-      </div>
-
-      {/* Chart card: the time-series view, with a raw-data table as an
-          alternate view of the exact same readings (every value the chart
-          shows is also reachable here, without needing to hover). */}
-      <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-6">
-        <div className="mb-2 flex items-center justify-between">
-          <h2 className="text-sm font-medium text-[var(--text-secondary)]">
-            Weight over time
-          </h2>
-          {/* Padded to a comfortable touch target (not just underlined
-              text) since these are the interactive controls on a page
-              that's otherwise just for reading — worth making them easy to
-              tap accurately on a phone. */}
-          <div className="flex items-center gap-1">
-            <button
-              onClick={() =>
-                downloadReadingsCsv(
-                  visibleReadings,
-                  `hive-weight-${rangeFilenameToken(timeRangeKey, customFrom, customTo)}.csv`,
-                )
-              }
-              disabled={visibleReadings.length === 0}
-              className="-mx-2 -my-1 rounded-md px-2 py-1 text-sm text-[var(--series-1)] hover:underline active:bg-[var(--series-1-wash)] disabled:text-[var(--text-muted)] disabled:hover:no-underline"
-            >
-              Download CSV
-            </button>
-            <button
-              onClick={() => setShowTable((v) => !v)}
-              className="-mx-2 -my-1 rounded-md px-2 py-1 text-sm text-[var(--series-1)] hover:underline active:bg-[var(--series-1-wash)]"
-            >
-              {showTable ? "Show chart" : "Show table"}
-            </button>
-          </div>
-        </div>
-
-        {/* Range controls. Time range affects both the chart and the table
-            below (it's a real filter on which readings are in view), while
-            the weight range only makes sense for the chart — it's a Y-axis
-            display bound, not a reason to exclude table rows — so those
-            inputs only render when the chart is what's showing. */}
-        <div className="mb-3 flex flex-col gap-2 border-b border-[var(--gridline)] pb-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
-          <div className="flex flex-wrap gap-1">
-            {TIME_RANGE_PRESETS.map((preset) => (
-              <button
-                key={preset.key}
-                onClick={() => setTimeRangeKey(preset.key)}
-                className={`rounded-md px-2.5 py-1 text-xs font-medium ${
-                  timeRangeKey === preset.key
-                    ? "bg-[var(--series-1)] text-white"
-                    : "text-[var(--text-muted)] hover:bg-[var(--series-1-wash)] hover:text-[var(--foreground)]"
-                }`}
-              >
-                {preset.label}
-              </button>
-            ))}
-            <button
-              onClick={() => setTimeRangeKey("all")}
-              className={`rounded-md px-2.5 py-1 text-xs font-medium ${
-                timeRangeKey === "all"
-                  ? "bg-[var(--series-1)] text-white"
-                  : "text-[var(--text-muted)] hover:bg-[var(--series-1-wash)] hover:text-[var(--foreground)]"
-              }`}
-            >
-              All
-            </button>
-            <button
-              onClick={() => setTimeRangeKey("custom")}
-              className={`rounded-md px-2.5 py-1 text-xs font-medium ${
-                timeRangeKey === "custom"
-                  ? "bg-[var(--series-1)] text-white"
-                  : "text-[var(--text-muted)] hover:bg-[var(--series-1-wash)] hover:text-[var(--foreground)]"
-              }`}
-            >
-              Custom
-            </button>
+            {latest ? (
+              <>
+                {/* text-4xl rather than 5xl below ~640px keeps "61.70 kg" from
+                    crowding the card's padding on the narrowest phone screens
+                    (~320px wide). */}
+                <div className="mt-1 text-4xl font-semibold tabular-nums text-[var(--foreground)] sm:text-5xl">
+                  {latest.averageWeight.toFixed(2)}
+                  <span className="ml-2 text-xl text-[var(--text-muted)] sm:text-2xl">
+                    kg
+                  </span>
+                </div>
+                <div className="mt-2 text-sm text-[var(--text-muted)]">
+                  {formatDateTime(latest.timestamp)} &middot;{" "}
+                  {formatRelative(latest.timestamp)}
+                </div>
+              </>
+            ) : (
+              // Shown before the watcher has ever successfully ingested a
+              // file for this board — e.g. right after a fresh setup.
+              <div className="mt-1 text-lg text-[var(--text-muted)]">
+                No readings yet — waiting on the watcher to ingest a session.
+              </div>
+            )}
           </div>
 
-          {timeRangeKey === "custom" && (
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[var(--text-muted)]">
-              <label className="flex items-center gap-1">
-                From
-                <input
-                  type="datetime-local"
-                  value={customFrom}
-                  onChange={(e) => setCustomFrom(e.target.value)}
-                  className="rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 py-1 text-[var(--foreground)]"
-                />
-              </label>
-              <label className="flex items-center gap-1">
-                To
-                <input
-                  type="datetime-local"
-                  value={customTo}
-                  onChange={(e) => setCustomTo(e.target.value)}
-                  className="rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 py-1 text-[var(--foreground)]"
-                />
-              </label>
-            </div>
-          )}
-
-          {!showTable && (
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[var(--text-muted)]">
-              <label className="flex items-center gap-1">
-                Min kg
-                <input
-                  type="number"
-                  step="0.1"
-                  inputMode="decimal"
-                  placeholder="auto"
-                  value={minWeight}
-                  onChange={(e) => setMinWeight(e.target.value)}
-                  className="w-16 rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 py-1 text-[var(--foreground)]"
-                />
-              </label>
-              <label className="flex items-center gap-1">
-                Max kg
-                <input
-                  type="number"
-                  step="0.1"
-                  inputMode="decimal"
-                  placeholder="auto"
-                  value={maxWeight}
-                  onChange={(e) => setMaxWeight(e.target.value)}
-                  className="w-16 rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 py-1 text-[var(--foreground)]"
-                />
-              </label>
-              {hasWeightRange && (
+          {/* Chart card: the time-series view, with a raw-data table as an
+              alternate view of the exact same readings (every value the chart
+              shows is also reachable here, without needing to hover). */}
+          <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-6">
+            <div className="mb-2 flex items-center justify-between">
+              <h2 className="text-sm font-medium text-[var(--text-secondary)]">
+                Weight over time
+              </h2>
+              {/* Padded to a comfortable touch target (not just underlined
+                  text) since these are the interactive controls on a page
+                  that's otherwise just for reading — worth making them easy to
+                  tap accurately on a phone. */}
+              <div className="flex items-center gap-1">
                 <button
-                  onClick={() => {
-                    setMinWeight("");
-                    setMaxWeight("");
-                  }}
-                  className="text-[var(--series-1)] hover:underline"
+                  onClick={() =>
+                    downloadReadingsCsv(
+                      visibleReadings,
+                      `hive-weight-${rangeFilenameToken(timeRangeKey, customFrom, customTo)}.csv`,
+                    )
+                  }
+                  disabled={visibleReadings.length === 0}
+                  className="-mx-2 -my-1 rounded-md px-2 py-1 text-sm text-[var(--series-1)] hover:underline active:bg-[var(--series-1-wash)] disabled:text-[var(--text-muted)] disabled:hover:no-underline"
                 >
-                  Reset
+                  Download CSV
                 </button>
+                <button
+                  onClick={() => setShowTable((v) => !v)}
+                  className="-mx-2 -my-1 rounded-md px-2 py-1 text-sm text-[var(--series-1)] hover:underline active:bg-[var(--series-1-wash)]"
+                >
+                  {showTable ? "Show chart" : "Show table"}
+                </button>
+              </div>
+            </div>
+
+            {/* Range controls. Time range affects both the chart and the table
+                below (it's a real filter on which readings are in view), while
+                the weight range only makes sense for the chart — it's a Y-axis
+                display bound, not a reason to exclude table rows — so those
+                inputs only render when the chart is what's showing. */}
+            <div className="mb-3 flex flex-col gap-2 border-b border-[var(--gridline)] pb-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
+              <div className="flex flex-wrap gap-1">
+                {TIME_RANGE_PRESETS.map((preset) => (
+                  <button
+                    key={preset.key}
+                    onClick={() => setTimeRangeKey(preset.key)}
+                    className={`rounded-md px-2.5 py-1 text-xs font-medium ${
+                      timeRangeKey === preset.key
+                        ? "bg-[var(--series-1)] text-white"
+                        : "text-[var(--text-muted)] hover:bg-[var(--series-1-wash)] hover:text-[var(--foreground)]"
+                    }`}
+                  >
+                    {preset.label}
+                  </button>
+                ))}
+                <button
+                  onClick={() => setTimeRangeKey("all")}
+                  className={`rounded-md px-2.5 py-1 text-xs font-medium ${
+                    timeRangeKey === "all"
+                      ? "bg-[var(--series-1)] text-white"
+                      : "text-[var(--text-muted)] hover:bg-[var(--series-1-wash)] hover:text-[var(--foreground)]"
+                  }`}
+                >
+                  All
+                </button>
+                <button
+                  onClick={() => setTimeRangeKey("custom")}
+                  className={`rounded-md px-2.5 py-1 text-xs font-medium ${
+                    timeRangeKey === "custom"
+                      ? "bg-[var(--series-1)] text-white"
+                      : "text-[var(--text-muted)] hover:bg-[var(--series-1-wash)] hover:text-[var(--foreground)]"
+                  }`}
+                >
+                  Custom
+                </button>
+              </div>
+
+              {timeRangeKey === "custom" && (
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[var(--text-muted)]">
+                  <label className="flex items-center gap-1">
+                    From
+                    <input
+                      type="datetime-local"
+                      value={customFrom}
+                      onChange={(e) => setCustomFrom(e.target.value)}
+                      className="rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 py-1 text-[var(--foreground)]"
+                    />
+                  </label>
+                  <label className="flex items-center gap-1">
+                    To
+                    <input
+                      type="datetime-local"
+                      value={customTo}
+                      onChange={(e) => setCustomTo(e.target.value)}
+                      className="rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 py-1 text-[var(--foreground)]"
+                    />
+                  </label>
+                </div>
+              )}
+
+              {!showTable && (
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[var(--text-muted)]">
+                  <label className="flex items-center gap-1">
+                    Min kg
+                    <input
+                      type="number"
+                      step="0.1"
+                      inputMode="decimal"
+                      placeholder="auto"
+                      value={minWeight}
+                      onChange={(e) => setMinWeight(e.target.value)}
+                      className="w-16 rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 py-1 text-[var(--foreground)]"
+                    />
+                  </label>
+                  <label className="flex items-center gap-1">
+                    Max kg
+                    <input
+                      type="number"
+                      step="0.1"
+                      inputMode="decimal"
+                      placeholder="auto"
+                      value={maxWeight}
+                      onChange={(e) => setMaxWeight(e.target.value)}
+                      className="w-16 rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 py-1 text-[var(--foreground)]"
+                    />
+                  </label>
+                  {hasWeightRange && (
+                    <button
+                      onClick={() => {
+                        setMinWeight("");
+                        setMaxWeight("");
+                      }}
+                      className="text-[var(--series-1)] hover:underline"
+                    >
+                      Reset
+                    </button>
+                  )}
+                </div>
               )}
             </div>
-          )}
-        </div>
 
-        {readings.length === 0 ? (
-          <div className="flex h-[280px] items-center justify-center text-[var(--text-muted)] sm:h-[360px]">
-            No data yet
-          </div>
-        ) : visibleReadings.length === 0 ? (
-          // Distinct from the "no data yet" case above — the watcher has
-          // ingested readings, they just don't fall inside the selected
-          // time range, which is a much more common thing to hit (picking
-          // a Custom range with nothing in it) than a truly empty dashboard.
-          <div className="flex h-[280px] items-center justify-center text-[var(--text-muted)] sm:h-[360px]">
-            No readings in this range
-          </div>
-        ) : showTable ? (
-          // Newest-first in the table (opposite of the chart's oldest-first
-          // order) since that's the more natural reading order for a log —
-          // most recent reading at the top. overflow-x-auto is a safety net
-          // in case a very narrow viewport can't fit both columns — the
-          // table scrolls in its own box rather than the whole page.
-          <div className="max-h-[280px] overflow-x-auto overflow-y-auto sm:max-h-[360px]">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-[var(--gridline)] text-left text-[var(--text-muted)]">
-                  <th className="py-2 font-medium">Time</th>
-                  <th className="py-2 font-medium">Weight (kg)</th>
-                </tr>
-              </thead>
-              <tbody>
-                {[...visibleReadings]
-                  .reverse()
-                  .map((r) => (
-                    <tr
-                      key={r.id}
-                      className="border-b border-[var(--gridline)] last:border-0"
-                    >
-                      <td className="py-2 text-[var(--text-secondary)]">
-                        {formatDateTime(r.timestamp)}
-                      </td>
-                      <td className="py-2 tabular-nums text-[var(--foreground)]">
-                        {r.averageWeight.toFixed(2)}
-                      </td>
+            {readings.length === 0 ? (
+              <div className="flex h-[280px] items-center justify-center text-[var(--text-muted)] sm:h-[360px]">
+                No data yet
+              </div>
+            ) : visibleReadings.length === 0 ? (
+              // Distinct from the "no data yet" case above — the watcher has
+              // ingested readings, they just don't fall inside the selected
+              // time range, which is a much more common thing to hit (picking
+              // a Custom range with nothing in it) than a truly empty dashboard.
+              <div className="flex h-[280px] items-center justify-center text-[var(--text-muted)] sm:h-[360px]">
+                No readings in this range
+              </div>
+            ) : showTable ? (
+              // Newest-first in the table (opposite of the chart's oldest-first
+              // order) since that's the more natural reading order for a log —
+              // most recent reading at the top. overflow-x-auto is a safety net
+              // in case a very narrow viewport can't fit both columns — the
+              // table scrolls in its own box rather than the whole page.
+              <div className="max-h-[280px] overflow-x-auto overflow-y-auto sm:max-h-[360px]">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-[var(--gridline)] text-left text-[var(--text-muted)]">
+                      <th className="py-2 font-medium">Time</th>
+                      <th className="py-2 font-medium">Weight (kg)</th>
                     </tr>
-                  ))}
-              </tbody>
-            </table>
+                  </thead>
+                  <tbody>
+                    {[...visibleReadings]
+                      .reverse()
+                      .map((r) => (
+                        <tr
+                          key={r.id}
+                          className="border-b border-[var(--gridline)] last:border-0"
+                        >
+                          <td className="py-2 text-[var(--text-secondary)]">
+                            {formatDateTime(r.timestamp)}
+                          </td>
+                          <td className="py-2 tabular-nums text-[var(--foreground)]">
+                            {r.averageWeight.toFixed(2)}
+                          </td>
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <WeightChart
+                readings={visibleReadings}
+                weightDomain={weightDomain}
+              />
+            )}
           </div>
-        ) : (
-          <WeightChart readings={visibleReadings} weightDomain={weightDomain} />
-        )}
-      </div>
+        </>
+      )}
     </div>
   );
 }

@@ -76,7 +76,7 @@ services:
       - "${WEB_PORT:-3000}:3000"
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-beehive_app}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-beehive}
-      PI_MAC_ADDRESS: ${PI_MAC_ADDRESS:?Set PI_MAC_ADDRESS in .env}
+      AUTH_SECRET: ${AUTH_SECRET:?Set AUTH_SECRET in .env}
     depends_on:
       db:
         condition: service_healthy
@@ -100,7 +100,7 @@ services:
     user: "${WATCH_UID:-1000}:${WATCH_GID:-1000}"
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-beehive_app}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-beehive}
-      PI_MAC_ADDRESS: ${PI_MAC_ADDRESS:?Set PI_MAC_ADDRESS in .env}
+      PI_ID: ${PI_ID:?Set PI_ID in .env - register the Pi in the admin panel first}
       # The container-side path — see the volumes: line below for where
       # this actually points on the host. Deliberately not the same value
       # as WATCH_DIR in .env (that's a host path used for the bind mount

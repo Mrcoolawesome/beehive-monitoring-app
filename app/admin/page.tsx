@@ -1,11 +1,10 @@
-// Placeholder admin landing page - proves middleware.ts's route gate
-// works end-to-end. Real content (Server/Pi/Board management) is Phase 3.
+// Admin landing page - middleware.ts already guarantees only an ADMIN
+// reaches this far.
 
+import Link from "next/link";
 import { auth } from "@/lib/auth";
 
 export default async function AdminPage() {
-  // middleware.ts already guarantees only an ADMIN reaches this far, so
-  // this is just for display, not an access check of its own.
   const session = await auth();
 
   return (
@@ -16,9 +15,26 @@ export default async function AdminPage() {
       <p className="text-sm text-[var(--text-muted)]">
         Signed in as {session?.user?.email} ({session?.user?.role}).
       </p>
-      <p className="text-sm text-[var(--text-muted)]">
-        Server/Pi/board management coming next.
-      </p>
+      <div className="flex flex-col gap-2 sm:flex-row">
+        <Link
+          href="/admin/server"
+          className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4 hover:bg-[var(--series-1-wash)] sm:flex-1"
+        >
+          <div className="font-medium text-[var(--foreground)]">Server</div>
+          <div className="text-sm text-[var(--text-muted)]">
+            The address every Pi connects to
+          </div>
+        </Link>
+        <Link
+          href="/admin/pis"
+          className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4 hover:bg-[var(--series-1-wash)] sm:flex-1"
+        >
+          <div className="font-medium text-[var(--foreground)]">Pis</div>
+          <div className="text-sm text-[var(--text-muted)]">
+            Register Pis, assign owners, manage boards
+          </div>
+        </Link>
+      </div>
     </div>
   );
 }
