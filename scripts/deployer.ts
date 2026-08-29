@@ -297,11 +297,21 @@ async function handleInitialSetup(pi: Pi) {
       "tools/install_beedeployment_service.sh",
     );
     await scpUpload(resolved, keyPath, installScript, `${remoteDirFor()}/install_beedeployment_service.sh`);
+    // install_beedeployment_service.sh ends with `systemctl enable --now`,
+    // which is a no-op on a unit that's already active - if this Pi
+    // already had a beedeployment.service running (e.g. from an earlier
+    // manual setup, or a previous slot/port), that old process keeps
+    // running with its old ExecStart args (old port) until something
+    // actually restarts it. An explicit restart right after covers both
+    // "wasn't running yet" (restarting an inactive-then-just-started unit
+    // is harmless) and "was already running with stale args" (this is the
+    // case that actually needs it) in one step.
     await sshExec(
       resolved,
       keyPath,
       `chmod +x '${remoteDirFor()}/install_beedeployment_service.sh' && ` +
-        `cd '${remoteDirFor()}' && sudo ./install_beedeployment_service.sh ${gdsHost} ${resolved.assignedPort} ${resolved.sshUser}`,
+        `cd '${remoteDirFor()}' && sudo ./install_beedeployment_service.sh ${gdsHost} ${resolved.assignedPort} ${resolved.sshUser} && ` +
+        `sudo systemctl restart beedeployment.service`,
     );
   });
 
