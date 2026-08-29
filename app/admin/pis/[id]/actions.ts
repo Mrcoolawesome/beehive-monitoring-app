@@ -112,3 +112,36 @@ export async function requestRedeployAction(piId: string, _formData: FormData) {
   });
   revalidatePath(`/admin/pis/${piId}`);
 }
+
+const reassignUserSchema = z.object({
+  piId: z.string().min(1),
+  userId: z.string().min(1, "Select a user"),
+});
+
+// Just re-points Pi.userId - doesn't touch anything on the Pi itself or
+// its GDS/decoder containers (those aren't scoped by user at all, only
+// the dashboard's read side is - see app/page.tsx's `pi: { userId }`
+// join). Takes effect for the new owner immediately, the old owner loses
+// visibility immediately - no confirmation step, same as this app's other
+// admin actions.
+export async function reassignPiUserAction(
+  _prevState: string | undefined,
+  formData: FormData,
+): Promise<string | undefined> {
+  await requireAdmin();
+
+  const parsed = reassignUserSchema.safeParse({
+    piId: formData.get("piId"),
+    userId: formData.get("userId"),
+  });
+  if (!parsed.success) {
+    return parsed.error.issues[0]?.message ?? "Invalid input.";
+  }
+
+  await prisma.pi.update({
+    where: { id: parsed.data.piId },
+    data: { userId: parsed.data.userId },
+  });
+  revalidatePath(`/admin/pis/${parsed.data.piId}`);
+  revalidatePath("/admin/pis");
+}

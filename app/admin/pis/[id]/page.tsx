@@ -2,6 +2,7 @@ import { notFound } from "next/navigation";
 import { prisma } from "@/lib/db";
 import BoardsSection from "./BoardsSection";
 import SshSetupSection from "./SshSetupSection";
+import ReassignUserForm from "./ReassignUserForm";
 
 // Matches the fixed number of WiiBoardManager instances the flight
 // software declares (wiiBoardManager0..wiiBoardManager3) - see the "Multi-
@@ -20,13 +21,19 @@ export default async function PiDetailPage({
 }) {
   const { id } = await params;
 
-  const pi = await prisma.pi.findUnique({
-    where: { id },
-    include: {
-      user: { select: { email: true } },
-      boards: { orderBy: { slotIndex: "asc" } },
-    },
-  });
+  const [pi, users] = await Promise.all([
+    prisma.pi.findUnique({
+      where: { id },
+      include: {
+        user: { select: { id: true, email: true } },
+        boards: { orderBy: { slotIndex: "asc" } },
+      },
+    }),
+    prisma.user.findMany({
+      select: { id: true, email: true },
+      orderBy: { email: "asc" },
+    }),
+  ]);
   if (!pi) notFound();
 
   return (
@@ -37,7 +44,9 @@ export default async function PiDetailPage({
 
       <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4 text-sm sm:p-6">
         <dt className="text-[var(--text-muted)]">User</dt>
-        <dd className="text-[var(--foreground)]">{pi.user.email}</dd>
+        <dd className="text-[var(--foreground)]">
+          <ReassignUserForm piId={pi.id} currentUserId={pi.user.id} users={users} />
+        </dd>
         <dt className="text-[var(--text-muted)]">Tailscale name</dt>
         <dd className="text-[var(--foreground)]">{pi.tailscaleName}</dd>
         <dt className="text-[var(--text-muted)]">Resolved IP</dt>
