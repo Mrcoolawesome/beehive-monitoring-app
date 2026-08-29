@@ -29,7 +29,7 @@ unit_file="$unit_dir/beehive-deployer.service"
 node_bin="$(command -v node)"
 tsx_bin="$repo_root/node_modules/.bin/tsx"
 
-if [[ ! -d "$beehive_project_dir/.git" ]]; then
+if [[ ! -e "$beehive_project_dir/.git" ]]; then
     echo "Not a git checkout: $beehive_project_dir" >&2
     echo "Clone beehive-project there first, or pass its path as \$1." >&2
     exit 1
