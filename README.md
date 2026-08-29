@@ -249,11 +249,15 @@ handled (see `PiPendingAction` in `prisma/schema.prisma`).
    haven't already. Don't already know a new board's MAC (it isn't printed
    anywhere convenient)? Click **"Scan for new board"** and press the sync
    button inside the board's battery compartment while it runs (~20s) —
-   this queues `SCAN_FOR_BOARDS`; the deployer runs a bounded `bluetoothctl`
-   scan on the Pi over SSH (independent of whatever `beedeployment.service`
-   is doing with its own already-configured boards — no flight-software or
-   GDS protocol involved) and any newly-discovered board's MAC shows up
-   with a "Use this MAC" button that fills it into the form below, so you
+   this queues `SCAN_FOR_BOARDS`; the deployer briefly stops
+   `beedeployment.service` (its own WiiBoardManager instances retry
+   connecting roughly once a second whenever a configured board isn't
+   connected, each attempt cycling `bluetoothctl` scan on/off - left
+   running, that stomps on this scan's own discovery window - confirmed
+   live), runs a bounded `bluetoothctl` scan on the Pi over SSH (no
+   flight-software or GDS protocol involved), then restarts the service.
+   Any newly-discovered board's MAC shows up with a "Use this MAC" button
+   that fills it into the form below, so you
    still choose the label/slot yourself rather than it being added
    automatically.
 5. Once the public key is installed on the Pi, click **"Run initial

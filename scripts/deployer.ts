@@ -357,22 +357,35 @@ async function handleScanForBoards(pi: Pi) {
   const existingBoards = await prisma.board.findMany({ where: { piId: pi.id } });
   const alreadyOnThisPi = new Set(existingBoards.map((b) => b.bluetoothMac));
 
-  const output = await withPiKeyFile(resolved, (keyPath) =>
-    sshExec(
-      resolved,
-      keyPath,
+  const output = await withPiKeyFile(resolved, async (keyPath) => {
+    // beedeployment.service's own WiiBoardManager instances retry
+    // connecting to their configured board(s) roughly once a second
+    // whenever one isn't currently connected, each attempt spinning up
+    // its own bluetoothctl process that cycles scan on/off - confirmed
+    // live to stomp on this scan's own discovery window (a second board
+    // in sync mode nearby didn't show up at all while the service was
+    // running normally). Stopping the service for the scan's duration
+    // and restarting it after - always, even if the scan itself throws -
+    // avoids that contention. Same brief interruption "Redeploy now"
+    // already causes, not a new risk class.
+    await sshExec(resolved, keyPath, "sudo systemctl stop beedeployment.service");
+    try {
       // One long-lived bluetoothctl process fed a command sequence over
       // stdin, not a one-shot `bluetoothctl scan on` CLI invocation -
       // BlueZ ties an active discovery session to the requesting client's
       // D-Bus connection, so a process that exits immediately after
       // issuing "scan on" stops discovery the instant it exits. Same
       // reasoning as WiiBoardManager.cpp's own popen()-based handling,
-      // just shelled out over SSH instead of from the flight binary -
-      // this runs independently of whatever beedeployment.service is
-      // doing with its own already-configured boards.
-      `{ echo "scan on"; sleep ${SCAN_DURATION_SECONDS}; echo "devices"; echo "scan off"; echo "quit"; } | bluetoothctl`,
-    ),
-  );
+      // just shelled out over SSH instead of from the flight binary.
+      return await sshExec(
+        resolved,
+        keyPath,
+        `{ echo "scan on"; sleep ${SCAN_DURATION_SECONDS}; echo "devices"; echo "scan off"; echo "quit"; } | bluetoothctl`,
+      );
+    } finally {
+      await sshExec(resolved, keyPath, "sudo systemctl start beedeployment.service");
+    }
+  });
 
   // bluetoothctl's `devices` output lines look like:
   //   Device 00:1F:32:22:03:BF Nintendo Wii Remote Balance Board
