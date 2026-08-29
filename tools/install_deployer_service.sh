@@ -82,8 +82,15 @@ RestartSec=10
 WantedBy=default.target
 EOF
 
+# `enable --now` is a no-op restart-wise if the service is already active
+# (same lesson learned the hard way for beedeployment.service's own
+# install script - see handleInitialSetup()'s comment in
+# scripts/deployer.ts) - an explicit restart is what actually picks up a
+# changed unit file (e.g. this script's own ExecStartPre addition) on a
+# re-run against an already-running deployer.
 systemctl --user daemon-reload
-systemctl --user enable --now beehive-deployer.service
+systemctl --user enable beehive-deployer.service
+systemctl --user restart beehive-deployer.service
 
 echo "Installed and started: $unit_file"
 echo "Using beehive-project checkout: $beehive_project_dir"
