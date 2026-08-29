@@ -64,6 +64,18 @@ function guiPortFor(assignedPort: number): number {
   return assignedPort + 10_000;
 }
 
+// fprime-gds's "threaded TCP socket server" port - the same channel its
+// own web GUI connects through as just another client, and what
+// handleScanForBoards() below uses to send SCAN_FOR_BOARDS and read back
+// the resulting events (see tools/scan_for_boards.py in beehive-project).
+// Only reachable when GDS is started with --no-zmq (see
+// ensureDockerContainers()) - ZMQ (the default) uses a Unix domain socket
+// under /tmp inside the container, which a process outside that
+// container's mount namespace (this one) can't reach at all.
+function ttsPortFor(assignedPort: number): number {
+  return assignedPort + 20_000;
+}
+
 function remoteDirFor(): string {
   // Fixed remote path on every Pi, rather than "wherever the admin
   // happened to scp things to" like the manual tools/deploy_to_pi.sh flow
@@ -341,64 +353,38 @@ async function redeployToPi(pi: Pi) {
   console.log(`[redeploy] ${pi.name} redeployed (sha ${sha.slice(0, 8)})`);
 }
 
-// How long to hold the Pi in an active bluetoothctl scan for
-// SCAN_FOR_BOARDS - matches DISCOVERY_SCAN_SECONDS in
-// Components/WiiBoardManager/WiiBoardManager.cpp, the window already
-// tuned for this exact board model to reliably show up in a scan after
-// its physical sync button is pressed.
-const SCAN_DURATION_SECONDS = 20;
-
-// Matches WiiBoardManager.cpp's BOARD_NAME constant - what this board
-// model reports as its Bluetooth device name.
-const BOARD_PRODUCT_NAME = "Nintendo Wii Remote Balance Board";
-
+// beehive-project's tools/scan_for_boards.py sends the actual F' command
+// (WiiBoardManager.SCAN_FOR_BOARDS) and reads back its BoardDiscovered/
+// ScanComplete events over GDS's --tts-port - see that script and
+// ttsPortFor() above. F'-native, not SSH/bluetoothctl: this runs inside
+// the flight software itself, integrated with its own connect-
+// serialization mutex, so it doesn't need to stop beedeployment.service
+// the way an earlier SSH-based version of this feature did.
 async function handleScanForBoards(pi: Pi) {
-  const resolved = await resyncIfNeeded(pi);
   const existingBoards = await prisma.board.findMany({ where: { piId: pi.id } });
   const alreadyOnThisPi = new Set(existingBoards.map((b) => b.bluetoothMac));
 
-  const output = await withPiKeyFile(resolved, async (keyPath) => {
-    // beedeployment.service's own WiiBoardManager instances retry
-    // connecting to their configured board(s) roughly once a second
-    // whenever one isn't currently connected, each attempt spinning up
-    // its own bluetoothctl process that cycles scan on/off - confirmed
-    // live to stomp on this scan's own discovery window (a second board
-    // in sync mode nearby didn't show up at all while the service was
-    // running normally). Stopping the service for the scan's duration
-    // and restarting it after - always, even if the scan itself throws -
-    // avoids that contention. Same brief interruption "Redeploy now"
-    // already causes, not a new risk class.
-    await sshExec(resolved, keyPath, "sudo systemctl stop beedeployment.service");
-    try {
-      // One long-lived bluetoothctl process fed a command sequence over
-      // stdin, not a one-shot `bluetoothctl scan on` CLI invocation -
-      // BlueZ ties an active discovery session to the requesting client's
-      // D-Bus connection, so a process that exits immediately after
-      // issuing "scan on" stops discovery the instant it exits. Same
-      // reasoning as WiiBoardManager.cpp's own popen()-based handling,
-      // just shelled out over SSH instead of from the flight binary.
-      return await sshExec(
-        resolved,
-        keyPath,
-        `{ echo "scan on"; sleep ${SCAN_DURATION_SECONDS}; echo "devices"; echo "scan off"; echo "quit"; } | bluetoothctl`,
-      );
-    } finally {
-      await sshExec(resolved, keyPath, "sudo systemctl start beedeployment.service");
-    }
-  });
+  const pythonBin = path.join(BEEHIVE_PROJECT_DIR!, "fprime-venv/bin/python3");
+  const scriptPath = path.join(BEEHIVE_PROJECT_DIR!, "tools/scan_for_boards.py");
+  const output = await run(pythonBin, [
+    scriptPath,
+    "--host",
+    "127.0.0.1",
+    "--port",
+    String(ttsPortFor(pi.assignedPort)),
+  ]);
 
-  // bluetoothctl's `devices` output lines look like:
-  //   Device 00:1F:32:22:03:BF Nintendo Wii Remote Balance Board
-  const found = new Set<string>();
-  for (const line of output.split("\n")) {
-    const match = line.match(/^Device\s+([0-9A-Fa-f:]{17})\s+(.*)$/);
-    if (match && match[2].includes(BOARD_PRODUCT_NAME)) {
-      found.add(match[1].toUpperCase());
-    }
+  const lastLine = output.trim().split("\n").pop() ?? "{}";
+  const result = JSON.parse(lastLine) as { status: string; boards: string[] };
+  if (result.status !== "complete") {
+    throw new Error(`scan ${result.status} - see beehive-gds-${pi.id}'s logs for detail`);
   }
+
   // Only genuinely new boards - one already added to this Pi showing up
   // again (it's realistically still nearby) isn't a useful "discovery."
-  const newMacs = [...found].filter((mac) => !alreadyOnThisPi.has(mac));
+  const newMacs = result.boards
+    .map((mac) => mac.toUpperCase())
+    .filter((mac) => !alreadyOnThisPi.has(mac));
 
   await prisma.pi.update({
     where: { id: pi.id },
@@ -528,16 +514,38 @@ async function ensureDockerContainers(pi: Pi) {
   await mkdir(logsDir, { recursive: true });
 
   if (!(await containerExists(gdsName))) {
+    const ttsPort = ttsPortFor(pi.assignedPort);
     await run("docker", [
       "run", "-d", "--name", gdsName, "--restart", "unless-stopped",
       "-p", `${pi.assignedPort}:50000`,
       "-p", `${guiPortFor(pi.assignedPort)}:5000`,
+      "-p", `${ttsPort}:${ttsPort}`,
       "-v", `${path.join(BEEHIVE_PROJECT_DIR!, "build-artifacts")}:/app/build-artifacts:ro`,
       "-v", `${dpcatDir}:/data`,
       "-v", `${logsDir}:/app/logs`,
       "beehive-gds:latest",
+      // Full CMD from beehive-project's Dockerfile, repeated verbatim -
+      // any positional args passed to `docker run <image> ...` replace
+      // the image's own CMD entirely rather than appending to it, so the
+      // --no-zmq/--tts-port/--tts-addr flags below can't be tacked on
+      // without restating the rest too.
+      "--no-app",
+      "-d", "/app/build-artifacts/aarch64-linux/BeeDeployment",
+      "--gui-addr", "0.0.0.0",
+      "--ip-address", "0.0.0.0",
+      "--file-storage-directory", "/data",
+      "-l", "/app/logs",
+      // ZMQ (the default) uses a Unix domain socket under /tmp inside the
+      // container - unreachable from the deployer, which runs natively
+      // on the host, outside that mount namespace. --no-zmq falls back
+      // to a plain TCP server (the "threaded TCP socket server") that
+      // handleScanForBoards() connects to instead, the same way GDS's
+      // own web GUI connects as just another client.
+      "--no-zmq",
+      "--tts-port", String(ttsPort),
+      "--tts-addr", "0.0.0.0",
     ]);
-    console.log(`[docker] started ${gdsName} on port ${pi.assignedPort}`);
+    console.log(`[docker] started ${gdsName} on port ${pi.assignedPort} (tts ${ttsPort})`);
   }
 
   if (!(await containerExists(decoderName))) {
